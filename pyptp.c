@@ -35,6 +35,7 @@ typedef struct {
 	sem_t sem_event;
 	char *image_dir;
 	unsigned int image_index;
+	PyObject *callback;
 } Camera;
 
 
@@ -135,6 +136,41 @@ static void pyptp_event_callback(ptp_device *dev, const ptp_params *params, void
 	}
 }
 
+static void pyptp_call_callback(Camera *self, const char *path)
+{
+	PyObject *args, *res;
+	PyGILState_STATE gstate;
+	
+	if (self->callback == NULL)
+	{
+		return;
+	}
+	
+	gstate = PyGILState_Ensure();
+	
+	res = Py_BuildValue("(s)", path);
+	
+	if (res)
+	{
+		args = res;
+		res = PyObject_CallObject(self->callback, args);
+		
+		Py_DECREF(args);
+	}
+	
+	if (!res)
+	{
+		PyErr_Print();
+		PyErr_Clear();
+	}
+	else
+	{
+		Py_DECREF(res);
+	}
+	
+	PyGILState_Release(gstate);
+}
+
 static int pyptp_transfer_image(Camera *self, uint32_t handle)
 {
 	int retval, image_size;
@@ -175,6 +211,8 @@ static int pyptp_transfer_image(Camera *self, uint32_t handle)
 			{
 				fwrite(image_data, 1, image_size, f);
 				fclose(f);
+				
+				pyptp_call_callback(self, image_path);
 			}
 		}
 		
@@ -318,6 +356,9 @@ static void Camera_dealloc(Camera *self)
 		self->usbctx = NULL;
 	}
 	
+	Py_XDECREF(self->callback);
+	self->callback = NULL;
+	
 	self->ob_type->tp_free((PyObject *)self);
 }
 
@@ -335,6 +376,7 @@ static PyObject * Camera_new(PyTypeObject *type, PyObject *args, PyObject *kwds)
 		self->transfer_state = TSS_INVALID;
 		self->image_dir = NULL;
 		self->image_index = 0;
+		self->callback = NULL;
 	}
 
 	return (PyObject *)self;
@@ -458,7 +500,7 @@ static void Camera_clear_image_dir(Camera *self)
 
 static int Camera_init(Camera *self, PyObject *args, PyObject *kwds)
 {
-	static char *kwlist[] = { "vid", "pid", "image_dir", NULL };
+	static char *kwlist[] = { "vid", "pid", "image_dir", "callback", NULL };
 	
 	int vid, pid;
 	int ret;
@@ -466,9 +508,10 @@ static int Camera_init(Camera *self, PyObject *args, PyObject *kwds)
 	usb_context *usbctx;
 	usb_device_handle *usbdev;
 	ptp_device *ptpdev;
+	PyObject *callback;
 	
 	// Parse the keyword arguments
-	if (!PyArg_ParseTupleAndKeywords(args, kwds, "ii|z", kwlist, &vid, &pid, &image_dir))
+	if (!PyArg_ParseTupleAndKeywords(args, kwds, "ii|zO", kwlist, &vid, &pid, &image_dir, &callback))
 	{
 		return -1;
 	}
@@ -506,9 +549,26 @@ static int Camera_init(Camera *self, PyObject *args, PyObject *kwds)
 	// Clear the previous image directory string
 	Camera_clear_image_dir(self);
 	
+	// Remove the previous callback
+	Py_XDECREF(self->callback);
+	self->callback = NULL;
+	
+	// Set the new callback
+	if (!PyCallable_Check(callback))
+	{
+		PyErr_SetString(PyExc_TypeError, "Callback is not callable");
+		return -1;
+	}
+	
+	Py_XINCREF(callback);
+	self->callback = callback;
+	
 	// Set the new image directory string
 	if (Camera_set_image_dir(self, image_dir) != 0)
 	{
+		Py_XDECREF(callback);
+		self->callback = NULL;
+		
 		PyErr_SetString(PyExc_RuntimeError, "Could not set target image directory");
 		return -1;
 	}
@@ -516,6 +576,8 @@ static int Camera_init(Camera *self, PyObject *args, PyObject *kwds)
 	if (Camera_init_semaphores(self) != 0)
 	{
 		Camera_clear_image_dir(self);
+		Py_XDECREF(callback);
+		self->callback = NULL;
 		
 		PyErr_SetString(PyExc_RuntimeError, "Could not initialize semaphores");
 		return -1;
@@ -530,7 +592,9 @@ static int Camera_init(Camera *self, PyObject *args, PyObject *kwds)
 		{
 			Camera_free_semaphores(self);
 			Camera_clear_image_dir(self);
-		
+			Py_XDECREF(callback);
+			self->callback = NULL;
+			
 			PyErr_Format(PyExc_RuntimeError, "Error initializing libusb: Error %d", ret);
 			return -1;
 		}
@@ -544,6 +608,8 @@ static int Camera_init(Camera *self, PyObject *args, PyObject *kwds)
 		usb_exit(usbctx);
 		Camera_free_semaphores(self);
 		Camera_clear_image_dir(self);
+		Py_XDECREF(callback);
+		self->callback = NULL;
 		
 		PyErr_SetString(PyExc_RuntimeError, "Could not open device: Device not found");
 		return -1;
@@ -558,6 +624,8 @@ static int Camera_init(Camera *self, PyObject *args, PyObject *kwds)
 		usb_exit(usbctx);
 		Camera_free_semaphores(self);
 		Camera_clear_image_dir(self);
+		Py_XDECREF(callback);
+		self->callback = NULL;
 		
 		PyErr_Format(PyExc_RuntimeError, "Could not initialize PTP device: PTP error %d", ret);
 		return -1;
@@ -581,6 +649,8 @@ static int Camera_init(Camera *self, PyObject *args, PyObject *kwds)
 		usb_exit(usbctx);
 		Camera_free_semaphores(self);
 		Camera_clear_image_dir(self);
+		Py_XDECREF(callback);
+		self->callback = NULL;
 		
 		PyErr_SetString(PyExc_RuntimeError, "Could not start transfer thread");
 		return -1;
@@ -675,6 +745,7 @@ static PyObject * Camera_start(Camera *self, PyObject *args)
 	
 	Camera_unlock_transfer(self);
 	
+	Py_INCREF(Py_None);
 	return Py_None;
 }
 
@@ -718,6 +789,7 @@ static PyObject * Camera_stop(Camera *self, PyObject *args)
 	
 	Camera_unlock_transfer(self);
 	
+	Py_INCREF(Py_None);
 	return Py_None;
 }
 
@@ -873,6 +945,7 @@ static PyObject * Camera_setparams(Camera *self, PyObject *args, PyObject *kwds)
 	
 	Camera_unlock_transfer(self);
 	
+	Py_INCREF(Py_None);
 	return Py_None;
 }
 

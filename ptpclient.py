@@ -6,18 +6,24 @@ from os import mkdir
 VID_SONY = 0x054C
 PID_SONY_A6000 = 0x094E
 
+def callback(path):
+	print 'Got path: {path}'.format(path=path)
+	
 def main():
 	try:
 		mkdir('images')
 	except OSError:
 		pass
 	
-	cam = Camera(vid=VID_SONY, pid=PID_SONY_A6000, image_dir='images')
+	cam = Camera(vid=VID_SONY, pid=PID_SONY_A6000, image_dir='images', callback=callback)
 	cam.handshake()
+	batt = cam.getbattery()
+	print 'Battery: %d%%' % batt
+
 	cam.setparams(drive='low')
-	cam.setparams(iso=1000)
-	cam.setparams(shutter=(1, 2000))
-	cam.setparams(fnumber=4.0)
+	#cam.setparams(iso=1000)
+	#cam.setparams(shutter=(1, 2000))
+	#cam.setparams(fnumber=4.0)
 	#cam.start()
 	#sleep(10)
 	#cam.stop()
