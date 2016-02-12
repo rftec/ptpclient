@@ -12,6 +12,7 @@
 #include <stdarg.h>
 #include <string.h>
 #include <errno.h>
+#include <signal.h>
 #include <pthread.h>
 #include <semaphore.h>
 #include <libusb-1.0/libusb.h>
@@ -32,7 +33,7 @@
 sem_t sem_stop_polling;
 #endif
 
-sem_t sem_objects;
+sem_t sem_objects, sem_quit;
 uint8_t print_log = 1;
 
 void plog(int ret, const char *desc)
@@ -41,6 +42,48 @@ void plog(int ret, const char *desc)
 	{
 		printf("%s: %d\n", desc, ret);
 	}
+}
+
+void sig_handler(int signum)
+{
+	sem_post(&sem_quit);
+}
+
+int wait_quit(long timeout_ms)
+{
+	int ret;
+	
+	if (timeout_ms > 0)
+	{
+		time_t sec;
+		long ms;
+		struct timespec ts;
+
+		sec = timeout_ms / 1000;
+		ms = timeout_ms % 1000;
+		
+		clock_gettime(CLOCK_REALTIME, &ts);
+		
+		ts.tv_sec += sec;
+		ts.tv_nsec += ms * 1000000;
+		
+		if (ts.tv_nsec > 1000000000)
+		{
+			ts.tv_nsec -= 1000000000;
+			ts.tv_sec++;
+		}
+		
+		do
+		{
+			ret = sem_timedwait(&sem_quit, &ts);
+		} while (ret != 0 && errno == EINTR);
+	}
+	else
+	{
+		ret = sem_trywait(&sem_quit);
+	}
+	
+	return (ret == 0);
 }
 
 void on_object_added(uint32_t handle)
@@ -63,7 +106,7 @@ void event_callback(ptp_device *dev, const ptp_params *params, void *ctx)
 		on_object_added((params->num_params > 0) ? params->params[0] : 0xFFFFC001);
 	}
 	
-	printf("Got event %04Xh with parameter %08Xh\n", params->code, params->params[0]);
+	//printf("Got event %04Xh with parameter %08Xh\n", params->code, params->params[0]);
 }
 
 #else
@@ -167,7 +210,7 @@ int transfer_image(ptp_device *dev, uint32_t object_handle, int index)
 
 void take_pictures(ptp_device *dev, int count)
 {
-	int retval, taken, pending, prev_pending, ready;
+	int retval, taken, pending, prev_pending, ready, stop, stopped;
 	struct timeval tv_dur, tv_ppic;
 	timer tm;
 	uint64_t usec_ppic;
@@ -175,6 +218,8 @@ void take_pictures(ptp_device *dev, int count)
 	taken = 0;
 	pending = 0;
 	prev_pending = 0;
+	stop = 0;
+	stopped = 0;
 	
 	sleep(1);
 	
@@ -184,7 +229,7 @@ void take_pictures(ptp_device *dev, int count)
 	
 	timer_start(&tm);
 	
-	while (taken < count || pending > 0)
+	while (!stopped || pending > 0)
 	{
 		retval = ptp_sony_get_pending_objects(dev);
 		pending = retval & 0x7FFF;
@@ -209,7 +254,7 @@ void take_pictures(ptp_device *dev, int count)
 			
 		#else // Poll using events
 		
-		if (taken < count || pending > 0)
+		if ((taken < count && !stopped) || pending > 0)
 		{
 			sem_wait(&sem_objects);
 			
@@ -229,12 +274,26 @@ void take_pictures(ptp_device *dev, int count)
 			prev_pending--;
 			taken++;
 			
-			if (taken == count)
+			if (taken == count && !stopped)
 			{
-				// Shutter release
-				plog(ptp_sony_set_control_device_b(dev, PTP_DPC_SONY_CTRL_Shutter, 1), "ptp_sony_set_control_device_b(0xD2C2, 0x0001)");
-				plog(ptp_sony_set_control_device_b(dev, PTP_DPC_SONY_CTRL_AFLock, 1), "ptp_sony_set_control_device_b(0xD2C1, 0x0001)");
+				stop = 1;
 			}
+		}
+		
+		if (wait_quit(0)) // Don't check if already stopped to allow sending the control value again...
+		{
+			printf("Stopping...\n");
+			stop = 1;
+		}
+		
+		if (stop)
+		{
+			// Shutter release
+			plog(ptp_sony_set_control_device_b(dev, PTP_DPC_SONY_CTRL_Shutter, 1), "ptp_sony_set_control_device_b(0xD2C2, 0x0001)");
+			plog(ptp_sony_set_control_device_b(dev, PTP_DPC_SONY_CTRL_AFLock, 1), "ptp_sony_set_control_device_b(0xD2C1, 0x0001)");
+			
+			stopped = 1;
+			stop = 0;
 		}
 	}
 	
@@ -323,6 +382,57 @@ void wait_property(ptp_device *ptpdev)
 	plog(retval, "ptp_sony_wait_property");
 }
 
+int print_device_props(ptp_device *ptpdev)
+{
+	ptp_pima_prop_desc_list *list;
+	int ret, i;
+	
+	// Create a property list
+	ret = ptp_pima_proplist_create(&list);
+	
+	if (ret != PTP_OK)
+	{
+		plog(ret, "ptp_pima_proplist_create");
+		return ret;
+	}
+	
+	// Get all the device's properties
+	ret = ptp_sony_get_all_dev_prop_data(ptpdev, list);
+
+	if (ret != PTP_OK)
+	{
+		plog(ret, "ptp_sony_get_all_dev_prop_data()");
+		return ret;
+	}
+	
+	// Print the properties
+	for (i = 0; i < list->count; i++)
+	{
+		ptp_sony_print_prop_desc(&list->desc[i]);
+	}
+	
+	ptp_pima_proplist_free(list);
+	
+	return PTP_OK;
+}
+
+void poll_device_props(ptp_device *ptpdev)
+{
+	int ret;
+	
+	do
+	{
+		printf("\nDevice properties:\n");
+		ret = print_device_props(ptpdev);
+		
+		if (ret != PTP_OK)
+		{
+			return;
+		}
+	}
+	while (!wait_quit(500));
+}
+
 void print_libusb_version(void)
 {
 	const struct libusb_version *v = libusb_get_version();
@@ -374,13 +484,13 @@ void print_device_speed(usb_device_handle *usbdev)
 int main(int argc, char **argv)
 {
 	int ret;
+	struct sigaction sigact;
 	usb_context *ctx;
 	//libusb_device **list;
 	//libusb_device *found = NULL;
 	//ssize_t cnt, i;
 	usb_device_handle *usbdev;
 	ptp_device *ptpdev;
-	ptp_pima_prop_desc_list *list;
 	ptp_pima_device_info *devinfo;
 	#ifndef USE_EVENT_CALLBACK
 	pthread_t thread_poll;
@@ -394,12 +504,33 @@ int main(int argc, char **argv)
 		exit(1);
 	}
 	
+	ret = sem_init(&sem_quit, 0, 0);
+	
+	if (ret)
+	{
+		printf("sem_init: %d\n", errno);
+		sem_destroy(&sem_objects);
+		exit(1);
+	}
+	
+	sigemptyset(&sigact.sa_mask);
+	sigact.sa_flags = 0;
+	sigact.sa_handler = sig_handler;
+	
+	ret = sigaction(SIGINT, &sigact, NULL);
+	
+	if (ret)
+	{
+		printf("Warning: Could not set signal handler\n");
+	}
+	
 	#ifndef USE_EVENT_CALLBACK
 	ret = sem_init(&sem_stop_polling, 0, 0);
 	
 	if (ret)
 	{
 		printf("sem_init: %d\n", errno);
+		sem_destroy(&sem_quit);
 		sem_destroy(&sem_objects);
 		exit(1);
 	}
@@ -412,6 +543,7 @@ int main(int argc, char **argv)
 		#ifndef USE_EVENT_CALLBACK
 		sem_destroy(&sem_stop_polling);
 		#endif
+		sem_destroy(&sem_quit);
 		sem_destroy(&sem_objects);
 		exit(1);
 	}
@@ -460,6 +592,7 @@ int main(int argc, char **argv)
 		#ifndef USE_EVENT_CALLBACK
 		sem_destroy(&sem_stop_polling);
 		#endif
+		sem_destroy(&sem_quit);
 		sem_destroy(&sem_objects);
 		exit(1);
 	}
@@ -480,6 +613,7 @@ int main(int argc, char **argv)
 		#ifndef USE_EVENT_CALLBACK
 		sem_destroy(&sem_stop_polling);
 		#endif
+		sem_destroy(&sem_quit);
 		sem_destroy(&sem_objects);
 		exit(1);
 	}
@@ -497,6 +631,7 @@ int main(int argc, char **argv)
 		#ifndef USE_EVENT_CALLBACK
 		sem_destroy(&sem_stop_polling);
 		#endif
+		sem_destroy(&sem_quit);
 		sem_destroy(&sem_objects);
 		exit(1);
 	}
@@ -527,29 +662,7 @@ int main(int argc, char **argv)
 		ptp_pima_devinfo_free(devinfo);
 	}
 	
-	// Create a property list
-	plog(ret = ptp_pima_proplist_create(&list), "ptp_pima_proplist_create");
-	
-	if (ret != PTP_OK)
-	{
-		list = NULL;
-	}
-	
-	// Get all the device's properties
-	plog(ptp_sony_get_all_dev_prop_data(ptpdev, list), "ptp_sony_get_all_dev_prop_data()");
-	
-	if (list)
-	{
-		int i;
-		
-		// Print the properties
-		for (i = 0; i < list->count; i++)
-		{
-			ptp_sony_print_prop_desc(&list->desc[i]);
-		}
-		
-		ptp_pima_proplist_free(list);
-	}
+	print_device_props(ptpdev);
 	
 	#if 0
 	// Wait for property changes and display them (polling mode only)
@@ -558,6 +671,10 @@ int main(int argc, char **argv)
 	
 	// Take some pictures
 	take_pictures(ptpdev, IMAGE_COUNT);
+	
+	//poll_device_props(ptpdev);
+	
+	printf("Closing...\n");
 	
 	#ifndef USE_EVENT_CALLBACK
 	sem_post(&sem_stop_polling);
@@ -570,6 +687,8 @@ int main(int argc, char **argv)
 	#ifndef USE_EVENT_CALLBACK
 	sem_destroy(&sem_stop_polling);
 	#endif
+	sem_destroy(&sem_quit);
 	sem_destroy(&sem_objects);
+	
 	return 0;
 }
