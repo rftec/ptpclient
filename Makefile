@@ -1,8 +1,8 @@
 
 CC=gcc
-CFLAGS=-c -Wall -g
+CFLAGS=-c -Wall -fPIC -g
 LDFLAGS=-Wall -g -lusb-1.0 -lpthread
-PYLDFLAGS=-lpython2.7
+PYLDFLAGS=-lpython2.7 -shared
 SOURCES=client.c ptp.c ptp-pima.c ptp-sony.c dynbuf.c timer.c usb.c
 PYSOURCES=pyptp.c
 OBJECTS=$(SOURCES:.c=.o)
