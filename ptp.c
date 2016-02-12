@@ -65,6 +65,7 @@ int ptp_device_init(ptp_device **dev, usb_device_handle *usbdev, ptp_event_callb
 	(*dev)->recv_size = 512;
 	(*dev)->event_cb = event_cb;
 	(*dev)->user_ctx = user_ctx;
+	(*dev)->bulk_xfer = NULL;
 	memset((*dev)->event_xfers, 0, sizeof((*dev)->event_xfers));
 	
 	(*dev)->recv_buf = malloc((*dev)->recv_size);
@@ -90,6 +91,17 @@ int ptp_device_init(ptp_device **dev, usb_device_handle *usbdev, ptp_event_callb
 		ptp_submit_event_transfers(*dev);
 	}
 	
+	(*dev)->bulk_xfer = libusb_alloc_transfer(0);
+	
+	if (!(*dev)->bulk_xfer)
+	{
+		ptp_cancel_event_transfers(*dev);
+		libusb_release_interface((*dev)->usbdev, 0);
+		free((*dev)->recv_buf);
+		free(*dev);
+		return LIBUSB_ERROR_NO_MEM;
+	}
+	
 	ret = ptp_pima_open_session(*dev, 1);
 	
 	if (ret != PTP_OK)
@@ -109,6 +121,7 @@ void ptp_device_free(ptp_device *dev)
 	if (dev)
 	{
 		ptp_pima_close_session(dev);
+		libusb_free_transfer(dev->bulk_xfer);
 		ptp_cancel_event_transfers(dev);
 		libusb_release_interface(dev->usbdev, 0);
 		free(dev->recv_buf);
@@ -271,13 +284,88 @@ static void ptp_cancel_event_transfers(ptp_device *dev)
 	}
 }
 
-int ptp_send(ptp_device *dev, void *data, int size)
+// Based on libusb-1.0.19/libusb/sync.c
+static void LIBUSB_CALL ptp_bulk_callback(struct libusb_transfer *transfer)
+{
+	int *completed = transfer->user_data;
+	*completed = 1;
+}
+
+// Based on libusb-1.0.19/libusb/sync.c
+static void ptp_transfer_wait_for_completion(ptp_device *dev)
+{
+	int r, *completed = dev->bulk_xfer->user_data;
+
+	while (!*completed) {
+		r = libusb_handle_events_completed(dev->usbctx, completed);
+		if (r < 0) {
+			if (r == LIBUSB_ERROR_INTERRUPTED)
+				continue;
+			libusb_cancel_transfer(dev->bulk_xfer);
+			continue;
+		}
+	}
+}
+
+// Based on libusb-1.0.19/libusb/sync.c
+static int ptp_bulk_transfer(ptp_device *dev, unsigned char endpoint, void *data, int length, int *transferred)
+{
+	int completed = 0;
+	int r;
+
+	if (!dev->bulk_xfer)
+	{
+		return libusb_bulk_transfer(dev->usbdev, endpoint, data, length, transferred, 0);
+	}
+
+	libusb_fill_bulk_transfer(dev->bulk_xfer, dev->usbdev, endpoint, data, length, ptp_bulk_callback, &completed, 0);
+	dev->bulk_xfer->type = LIBUSB_TRANSFER_TYPE_BULK;
+
+	r = libusb_submit_transfer(dev->bulk_xfer);
+	
+	if (r < 0)
+	{
+		return r;
+	}
+
+	ptp_transfer_wait_for_completion(dev);
+
+	*transferred = dev->bulk_xfer->actual_length;
+	switch (dev->bulk_xfer->status) {
+	case LIBUSB_TRANSFER_COMPLETED:
+		r = 0;
+		break;
+	case LIBUSB_TRANSFER_TIMED_OUT:
+		r = LIBUSB_ERROR_TIMEOUT;
+		break;
+	case LIBUSB_TRANSFER_STALL:
+		r = LIBUSB_ERROR_PIPE;
+		break;
+	case LIBUSB_TRANSFER_OVERFLOW:
+		r = LIBUSB_ERROR_OVERFLOW;
+		break;
+	case LIBUSB_TRANSFER_NO_DEVICE:
+		r = LIBUSB_ERROR_NO_DEVICE;
+		break;
+	case LIBUSB_TRANSFER_ERROR:
+	case LIBUSB_TRANSFER_CANCELLED:
+		r = LIBUSB_ERROR_IO;
+		break;
+		
+	default:
+		r = LIBUSB_ERROR_OTHER;
+	}
+	
+	return r;
+}
+
+static int ptp_send(ptp_device *dev, void *data, int size)
 {
 	int retval, i, transferred;
 	
 	for (i = 0; i < PTP_RETRY_COUNT; i++)
 	{
-		retval = libusb_bulk_transfer(dev->usbdev, PTP_EP_OUT, (unsigned char *)data, size, &transferred, 0);
+		retval = ptp_bulk_transfer(dev, PTP_EP_OUT, data, size, &transferred);
 		
 		if (retval == LIBUSB_ERROR_PIPE)
 		{

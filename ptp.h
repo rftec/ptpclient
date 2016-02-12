@@ -58,6 +58,7 @@ struct _ptp_device
 	ptp_event_callback event_cb;
 	void *user_ctx;
 	ptp_event_transfer event_xfers[PTP_EVENT_TRANSFER_COUNT];
+	struct libusb_transfer *bulk_xfer;
 };
 
 int ptp_device_init(ptp_device **dev, usb_device_handle *usbdev, ptp_event_callback event_cb, void *user_ctx);
