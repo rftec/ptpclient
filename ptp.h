@@ -2,13 +2,24 @@
 #define __PTP_H__
 
 #include <stdint.h>
+#include <endian.h>
 #include <libusb-1.0/libusb.h>
 #include "usb.h"
 
-#define htod16(x)	(x)
-#define htod32(x)	(x)
-#define dtoh16(x)	htod16(x)
-#define dtoh32(x)	htod32(x)
+#if __BYTE_ORDER == __LITTLE_ENDIAN	
+	//#define htod16(x)	(x)
+	//#define htod32(x)	(x)
+	//#define dtoh16(x)	htod16(x)
+	//#define dtoh32(x)	htod32(x)
+#elif __BYTE_ORDER == __BIG_ENDIAN
+#else
+	#error Unknown endianness
+#endif
+
+#define htod16(x)	htole16(x)
+#define htod32(x)	htole32(x)
+#define dtoh16(x)	le16toh(x)
+#define dtoh32(x)	le32toh(x)
 
 #define PTP_OK						0
 #define PTP_ERROR_BASE				-50
