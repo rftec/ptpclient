@@ -33,10 +33,20 @@
 #define PTP_EC_SONY_ObjectAdded			0xC201
 #define PTP_EC_SONY_PropertyChanged		0xC203
 
+#define PTP_VAL_SONY_SCM_SINGLE			0x0001
+#define PTP_VAL_SONY_SCM_HIGH			0x0002
+#define PTP_VAL_SONY_SCM_MID			0x8015
+#define PTP_VAL_SONY_SCM_LOW			0x8012
+
 int ptp_sony_sdio_connect(ptp_device *dev, uint32_t param1, uint32_t param2, uint32_t param3);
 int ptp_sony_get_sdio_ext_devinfo(ptp_device *dev, uint32_t version, ptp_pima_device_info *info);
 int ptp_sony_get_all_dev_prop_data(ptp_device *dev, ptp_pima_prop_desc_list *list);
-int ptp_sony_set_control_device_b(ptp_device *dev, uint32_t propcode, uint16_t value);
+int ptp_sony_set_control_device_a(ptp_device *dev, uint32_t propcode, void *value, int size);
+int ptp_sony_set_control_device_a_u16(ptp_device *dev, uint32_t propcode, uint16_t value);
+int ptp_sony_set_control_device_a_u32(ptp_device *dev, uint32_t propcode, uint32_t value);
+int ptp_sony_set_control_device_b(ptp_device *dev, uint32_t propcode, void *value, int size);
+int ptp_sony_set_control_device_b_u16(ptp_device *dev, uint32_t propcode, uint16_t value);
+int ptp_sony_set_control_device_b_u32(ptp_device *dev, uint32_t propcode, uint32_t value);
 int ptp_sony_wait_object(ptp_device *dev, uint32_t *object_handle, int timeout);
 int ptp_sony_wait_property(ptp_device *dev, ptp_pima_prop_code *code, int timeout);
 int ptp_sony_wait_pending_object(ptp_device *dev);

@@ -157,19 +157,34 @@ int ptp_sony_get_all_dev_prop_data(ptp_device *dev, ptp_pima_prop_desc_list *lis
 	return PTP_OK;
 }
 
-int ptp_sony_set_control_device_b(ptp_device *dev, uint32_t propcode, uint16_t value)
+int ptp_sony_set_control_device(ptp_device *dev, uint16_t opcode, uint32_t propcode, void *value, int size)
 {
 	ptp_params params_out, params_in;
 	int retval;
-	uint16_t data;
+	#if __BYTE_ORDER == BIG_ENDIAN
+	char buf[sizeof(uint128_t)];
+	int i;
+	#endif
 	
-	params_out.code = PTP_OP_SONY_SETCONTROLDEVICEB;
+	#if __BYTE_ORDER == __BIG_ENDIAN
+	if (size > sizeof(buf))
+	{
+		return PTP_ERROR_DATA_LEN;
+	}
+	
+	for (i = 0; i < size; i++)
+	{
+		buf[i] = ((char *)value)[size - i - 1];
+	}
+	
+	value = buf;
+	#endif
+	
+	params_out.code = opcode;
 	params_out.num_params = 1;
 	params_out.params[0] = propcode;
 	
-	data = htod16(value);
-	
-	retval = ptp_transact(dev, &params_out, &data, sizeof(data), &params_in, NULL, NULL);
+	retval = ptp_transact(dev, &params_out, value, size, &params_in, NULL, NULL);
 	
 	if (retval != PTP_OK)
 	{
@@ -182,6 +197,36 @@ int ptp_sony_set_control_device_b(ptp_device *dev, uint32_t propcode, uint16_t v
 	}
 	
 	return PTP_OK;
+}
+
+int ptp_sony_set_control_device_a(ptp_device *dev, uint32_t propcode, void *value, int size)
+{
+	return ptp_sony_set_control_device(dev, PTP_OP_SONY_SETCONTROLDEVICEA, propcode, value, size);
+}
+
+int ptp_sony_set_control_device_a_u16(ptp_device *dev, uint32_t propcode, uint16_t value)
+{
+	return ptp_sony_set_control_device_a(dev, propcode, &value, sizeof(value));
+}
+
+int ptp_sony_set_control_device_a_u32(ptp_device *dev, uint32_t propcode, uint32_t value)
+{
+	return ptp_sony_set_control_device_a(dev, propcode, &value, sizeof(value));
+}
+
+int ptp_sony_set_control_device_b(ptp_device *dev, uint32_t propcode, void *value, int size)
+{
+	return ptp_sony_set_control_device(dev, PTP_OP_SONY_SETCONTROLDEVICEB, propcode, value, size);
+}
+
+int ptp_sony_set_control_device_b_u16(ptp_device *dev, uint32_t propcode, uint16_t value)
+{
+	return ptp_sony_set_control_device_b(dev, propcode, &value, sizeof(value));
+}
+
+int ptp_sony_set_control_device_b_u32(ptp_device *dev, uint32_t propcode, uint32_t value)
+{
+	return ptp_sony_set_control_device_b(dev, propcode, &value, sizeof(value));
 }
 
 int ptp_sony_wait_object(ptp_device *dev, uint32_t *object_handle, int timeout)

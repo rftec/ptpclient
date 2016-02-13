@@ -224,8 +224,8 @@ void take_pictures(ptp_device *dev, int count)
 	sleep(1);
 	
 	// Shutter press
-	plog(ptp_sony_set_control_device_b(dev, PTP_DPC_SONY_CTRL_AFLock, 2), "ptp_sony_set_control_device_b(0xD2C1, 0x0002)");
-	plog(ptp_sony_set_control_device_b(dev, PTP_DPC_SONY_CTRL_Shutter, 2), "ptp_sony_set_control_device_b(0xD2C2, 0x0002)");
+	plog(ptp_sony_set_control_device_b_u16(dev, PTP_DPC_SONY_CTRL_AFLock, 2), "ptp_sony_set_control_device_b(0xD2C1, 0x0002)");
+	plog(ptp_sony_set_control_device_b_u16(dev, PTP_DPC_SONY_CTRL_Shutter, 2), "ptp_sony_set_control_device_b(0xD2C2, 0x0002)");
 	
 	timer_start(&tm);
 	
@@ -289,8 +289,8 @@ void take_pictures(ptp_device *dev, int count)
 		if (stop)
 		{
 			// Shutter release
-			plog(ptp_sony_set_control_device_b(dev, PTP_DPC_SONY_CTRL_Shutter, 1), "ptp_sony_set_control_device_b(0xD2C2, 0x0001)");
-			plog(ptp_sony_set_control_device_b(dev, PTP_DPC_SONY_CTRL_AFLock, 1), "ptp_sony_set_control_device_b(0xD2C1, 0x0001)");
+			plog(ptp_sony_set_control_device_b_u16(dev, PTP_DPC_SONY_CTRL_Shutter, 1), "ptp_sony_set_control_device_b(0xD2C2, 0x0001)");
+			plog(ptp_sony_set_control_device_b_u16(dev, PTP_DPC_SONY_CTRL_AFLock, 1), "ptp_sony_set_control_device_b(0xD2C1, 0x0001)");
 			
 			stopped = 1;
 			stop = 0;
@@ -300,8 +300,8 @@ void take_pictures(ptp_device *dev, int count)
 	timer_stop(&tm);
 	
 	// Shutter release (just to make sure)
-	plog(ptp_sony_set_control_device_b(dev, PTP_DPC_SONY_CTRL_Shutter, 1), "ptp_sony_set_control_device_b(0xD2C2, 0x0001)");
-	plog(ptp_sony_set_control_device_b(dev, PTP_DPC_SONY_CTRL_AFLock, 1), "ptp_sony_set_control_device_b(0xD2C1, 0x0001)");
+	plog(ptp_sony_set_control_device_b_u16(dev, PTP_DPC_SONY_CTRL_Shutter, 1), "ptp_sony_set_control_device_b(0xD2C2, 0x0001)");
+	plog(ptp_sony_set_control_device_b_u16(dev, PTP_DPC_SONY_CTRL_AFLock, 1), "ptp_sony_set_control_device_b(0xD2C1, 0x0001)");
 	
 	if (taken > 0)
 	{
@@ -670,9 +670,9 @@ int main(int argc, char **argv)
 	#endif
 	
 	// Take some pictures
-	take_pictures(ptpdev, IMAGE_COUNT);
+	//take_pictures(ptpdev, IMAGE_COUNT);
 	
-	//poll_device_props(ptpdev);
+	poll_device_props(ptpdev);
 	
 	printf("Closing...\n");
 	

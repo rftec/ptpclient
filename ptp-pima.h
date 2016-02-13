@@ -123,6 +123,11 @@ typedef uint16_t	ptp_pima_op_code;
 #define PTP_FORM_RANGE		0x01
 #define PTP_FORM_ENUM		0x02
 
+#define PTP_VAL_SCM_UNDEFINED	0x0000
+#define PTP_VAL_SCM_NORMAL		0x0001
+#define PTP_VAL_SCM_BURST		0x0002
+#define PTP_VAL_SCM_TIMELAPSE	0x0003
+
 typedef struct _ptp_pima_decode_context
 {
 	void *ptr;
