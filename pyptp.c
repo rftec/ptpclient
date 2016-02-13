@@ -15,6 +15,11 @@ typedef struct {
 	ptp_device *ptpdev;
 } Camera;
 
+typedef struct _shutter_speed {
+	uint16_t num;
+	uint16_t denom;
+} shutter_speed;
+
 
 static void Camera_dealloc(Camera *self);
 static PyObject * Camera_new(PyTypeObject *type, PyObject *args, PyObject *kwds);
@@ -156,13 +161,13 @@ static int Camera_init(Camera *self, PyObject *args, PyObject *kwds)
 	
 	if (vid < 0 || vid > 0xFFFF)
 	{
-		PyErr_SetString(PyExc_RuntimeError, "Vendor ID out of range");
+		PyErr_SetString(PyExc_ValueError, "Vendor ID out of range");
 		return -1;
 	}
 	
 	if (pid < 0 || pid > 0xFFFF)
 	{
-		PyErr_SetString(PyExc_RuntimeError, "Product ID out of range");
+		PyErr_SetString(PyExc_ValueError, "Product ID out of range");
 		return -1;
 	}
 	
@@ -184,7 +189,7 @@ static int Camera_init(Camera *self, PyObject *args, PyObject *kwds)
 
 		if (ret != USB_OK)
 		{
-			PyErr_SetString(PyExc_RuntimeError, "Error initializing libusb");
+			PyErr_Format(PyExc_RuntimeError, "Error initializing libusb: Error %d", ret);
 			return -1;
 		}
 	}
@@ -195,7 +200,7 @@ static int Camera_init(Camera *self, PyObject *args, PyObject *kwds)
 	{
 		usb_exit(usbctx);
 		
-		PyErr_SetString(PyExc_RuntimeError, "Could not open device");
+		PyErr_SetString(PyExc_RuntimeError, "Could not open device: Device not found");
 		return -1;
 	}
 	
@@ -206,7 +211,7 @@ static int Camera_init(Camera *self, PyObject *args, PyObject *kwds)
 		usb_close(usbdev);
 		usb_exit(usbctx);
 		
-		PyErr_SetString(PyExc_RuntimeError, "Could not initialize PTP device");
+		PyErr_Format(PyExc_RuntimeError, "Could not initialize PTP device: PTP error %d", ret);
 		return -1;
 	}
 	
@@ -219,18 +224,164 @@ static int Camera_init(Camera *self, PyObject *args, PyObject *kwds)
 
 static PyObject * Camera_start(Camera *self, PyObject *args)
 {
-    PyErr_SetString(PyExc_TypeError, "Not yet implemented");
+    PyErr_SetString(PyExc_NotImplementedError, "Not yet implemented");
 	return NULL;
 }
 
 static PyObject * Camera_stop(Camera *self, PyObject *args)
 {
-    PyErr_SetString(PyExc_TypeError, "Not yet implemented");
+    PyErr_SetString(PyExc_NotImplementedError, "Not yet implemented");
 	return NULL;
+}
+
+static int Camera_set_drive(Camera *self, const char *drive)
+{
+	int i, ret;
+	
+	static struct {
+		const char *name;
+		uint16_t value;
+	} drive_modes[] = {
+		{ "single", PTP_VAL_SONY_SCM_SINGLE },
+		{ "low",    PTP_VAL_SONY_SCM_LOW },
+		{ "medium", PTP_VAL_SONY_SCM_MID },
+		{ "high",   PTP_VAL_SONY_SCM_HIGH },
+		{ NULL, 0 }
+	};
+	
+	if (drive != NULL)
+	{
+		for (i = 0; drive_modes[i].name != NULL; i++)
+		{
+			if (strcmp(drive, drive_modes[i].name) == 0)
+			{
+				ret = ptp_sony_set_control_device_a_u16(self->ptpdev, PTP_DPC_StillCaptureMode, drive_modes[i].value);
+				
+				if (ret != PTP_OK)
+				{
+					PyErr_Format(PyExc_RuntimeError, "Could not set drive mode: PTP error %d", ret);
+					return -1;
+				}
+				
+				return 0;
+			}
+		}
+	}
+	
+	PyErr_Format(PyExc_ValueError, "Unrecognized drive mode: \"%s\"", drive);
+	return -1;
+}
+
+static int Camera_set_iso(Camera *self, uint32_t iso)
+{
+	/*
+	int ret;
+	
+	ret = ptp_sony_set_control_device_b_u32(self->ptpdev, PTP_DPC_SONY_ISO, iso);
+	
+	if (ret != PTP_OK)
+	{
+		PyErr_Format(PyExc_RuntimeError, "Could not set ISO: PTP error %d", ret);
+		return -1;
+	}
+	
+	return 0;*/
+	
+    PyErr_SetString(PyExc_NotImplementedError, "Not yet implemented");
+    return -1;
+}
+
+static int Camera_set_shutter_speed(Camera *self, const shutter_speed *speed)
+{
+	/*int ret;
+	
+	if (speed != NULL)
+	{
+		uint32_t v = (((uint32_t)speed->num) << 16) | speed->denom;
+		
+		ret = ptp_sony_set_control_device_b_u32(self->ptpdev, PTP_DPC_SONY_ShutterSpeed, v);
+				
+		if (ret != PTP_OK)
+		{
+			PyErr_Format(PyExc_RuntimeError, "Could not set shutter speed: PTP error %d", ret);
+			return -1;
+		}
+		
+		PyErr_Format(PyExc_RuntimeError, "Set shutter to %d/%d (%xh)", speed->num, speed->denom, v);
+		return -1;
+	}
+	
+	PyErr_Format(PyExc_ValueError, "Unrecognized shutter speed: %d/%d", speed->num, speed->denom);
+	return -1;*/
+	
+    PyErr_SetString(PyExc_NotImplementedError, "Not yet implemented");
+    return -1;
+}
+
+static int Camera_set_fnumber(Camera *self, float fnumber)
+{
+	/*
+	int ret;
+	uint16_t f;
+	
+	if (fnumber <= 0.1)
+	{
+		PyErr_Format(PyExc_ValueError, "Invalid F-number");
+		return -1;
+	}
+	
+	f = (uint16_t)roundf(fnumber * 100);
+	
+	ret = ptp_sony_set_control_device_b_u16(self->ptpdev, PTP_DPC_FNumber, f);
+				
+	if (ret != PTP_OK)
+	{
+		PyErr_Format(PyExc_RuntimeError, "Could not set F-number: PTP error %d", ret);
+		return -1;
+	}
+	
+	return 0;*/
+	
+    PyErr_SetString(PyExc_NotImplementedError, "Not yet implemented");
+    return -1;
 }
 
 static PyObject * Camera_setparams(Camera *self, PyObject *args, PyObject *kwds)
 {
-    PyErr_SetString(PyExc_TypeError, "Not yet implemented");
-	return NULL;
+	static char *kwlist[] = { "drive", "iso", "shutter", "fnumber", NULL };
+	
+	const char *drive = NULL;
+	unsigned int iso = 0;
+	double fnum = 0.0;
+	shutter_speed shutter = { 0, 0 };
+	
+	if (!PyArg_ParseTupleAndKeywords(args, kwds, "|zI(HH)d", kwlist, &drive, &iso, &shutter.num, &shutter.denom, &fnum))
+	{
+		return NULL;
+	}
+	
+	if (drive != NULL && Camera_set_drive(self, drive) != 0)
+	{
+		return NULL;
+	}
+	
+	if (iso != 0 && Camera_set_iso(self, (uint32_t)iso) != 0)
+	{
+		return NULL;
+	}
+	
+	if (shutter.num != 0 || shutter.denom != 0)
+	{
+		if (Camera_set_shutter_speed(self, &shutter) != 0)
+		{
+			return NULL;
+		}
+	}
+	
+	if (fnum > 0.01 && Camera_set_fnumber(self, fnum) != 0)
+	{
+		return NULL;
+	}
+	
+	return Py_None;
 }
