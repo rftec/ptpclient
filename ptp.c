@@ -268,7 +268,9 @@ static void ptp_cancel_event_transfer(ptp_event_transfer *xfer)
 
 static void ptp_submit_event_transfers(ptp_device *dev)
 {
-	for (int i = 0; i < PTP_EVENT_TRANSFER_COUNT; i++)
+	int i;
+
+	for (i = 0; i < PTP_EVENT_TRANSFER_COUNT; i++)
 	{
 		dev->event_xfers[i].dev = dev;
 		
@@ -278,7 +280,9 @@ static void ptp_submit_event_transfers(ptp_device *dev)
 
 static void ptp_cancel_event_transfers(ptp_device *dev)
 {
-	for (int i = 0; i < PTP_EVENT_TRANSFER_COUNT; i++)
+	int i;
+
+	for (i = 0; i < PTP_EVENT_TRANSFER_COUNT; i++)
 	{
 		ptp_cancel_event_transfer(&dev->event_xfers[i]);
 	}

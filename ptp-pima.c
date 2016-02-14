@@ -2,6 +2,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
+#include <inttypes.h>
 
 static const ptp_pima_code_name g_prop_names[] = {
 	{ PTP_DPC_Undefined,				"Undefined" },
@@ -965,39 +966,39 @@ void ptp_pima_print_prop_value(ptp_pima_type_code type, const ptp_pima_prop_valu
 	switch (type)
 	{
 	case PTP_DTC_UINT8:
-		printf("%u (%02Xh)", value->value->u8, value->value->u8);
+		printf("%" PRIu8 " (%02" PRIX8 "h)", value->value->u8, value->value->u8);
 		break;
 		
 	case PTP_DTC_INT8:
-		printf("%d (%02Xh)", value->value->s8, value->value->s8);
+		printf("%" PRId8 " (%02" PRIX8 "h)", value->value->s8, value->value->s8);
 		break;
 		
 	case PTP_DTC_UINT16:
-		printf("%u (%04Xh)", value->value->u16, value->value->u16);
+		printf("%" PRIu16 " (%04" PRIX16 "h)", value->value->u16, value->value->u16);
 		break;
 		
 	case PTP_DTC_INT16:
-		printf("%d (%04Xh)", value->value->s16, value->value->s16);
+		printf("%" PRId16 " (%04" PRIX16 "h)", value->value->s16, value->value->s16);
 		break;
 		
 	case PTP_DTC_UINT32:
-		printf("%u (%08Xh)", value->value->u32, value->value->u32);
+		printf("%" PRIu32 " (%08" PRIX32 "h)", value->value->u32, value->value->u32);
 		break;
 		
 	case PTP_DTC_INT32:
-		printf("%d (%08Xh)", value->value->s32, value->value->s32);
+		printf("%" PRId32 " (%08" PRIX32 "h)", value->value->s32, value->value->s32);
 		break;
 		
 	case PTP_DTC_UINT64:
-		printf("%lu (%016lXh)", value->value->u64, value->value->u64);
+		printf("%" PRIu64 " (%016" PRIX64 "h)", value->value->u64, value->value->u64);
 		break;
 		
 	case PTP_DTC_INT64:
-		printf("%ld (%016lXh)", value->value->s64, value->value->s64);
+		printf("%" PRId64 " (%016" PRIX64 "h)", value->value->s64, value->value->s64);
 		break;
 		
 	case PTP_DTC_UINT128:
-		printf("L=%lu (%016lXh) H=%lu (%016lXh)", 
+		printf("L=%" PRIu64 " (%016" PRIX64 "h) H=%" PRIu64 " (%016" PRIX64 "h)", 
 			value->value->u128.low, 
 			value->value->u128.low,
 			value->value->u128.high,
@@ -1005,7 +1006,7 @@ void ptp_pima_print_prop_value(ptp_pima_type_code type, const ptp_pima_prop_valu
 		break;
 		
 	case PTP_DTC_INT128:
-		printf("L=%ld (%016lXh) H=%ld (%016lXh)", 
+		printf("L=%" PRId64 " (%016" PRIX64 "h) H=%" PRId64 " (%016" PRIX64 "h)", 
 			value->value->s128.low, 
 			value->value->s128.low,
 			value->value->s128.high,
