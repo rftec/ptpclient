@@ -656,7 +656,11 @@ int ptp_transact(
 	
 	if (retval != PTP_OK)
 	{
-		free(temp_data_in);
+		if (data_in)
+		{
+			free(temp_data_in);
+		}
+		
 		printf("ptp_recv_response: %d\n", retval);
 	}
 	else if (data_in)
