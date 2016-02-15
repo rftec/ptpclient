@@ -847,6 +847,16 @@ void ptp_pima_proplist_free(ptp_pima_prop_desc_list *list)
 	}
 }
 
+void ptp_pima_proplist_clear(ptp_pima_prop_desc_list *list)
+{
+	if (list)
+	{
+		list->count = 0;
+		list->desc = NULL;
+		dynbuf_clear(list->buf);
+	}
+}
+
 ptp_pima_prop_desc * ptp_pima_proplist_get_prop(ptp_pima_prop_desc_list *list, ptp_pima_prop_code code)
 {
 	int i;

@@ -275,6 +275,7 @@ int ptp_pima_objinfo_create(ptp_pima_object_info **info);
 void ptp_pima_objinfo_free(ptp_pima_object_info *info);
 int ptp_pima_proplist_create(ptp_pima_prop_desc_list **list);
 void ptp_pima_proplist_free(ptp_pima_prop_desc_list *list);
+void ptp_pima_proplist_clear(ptp_pima_prop_desc_list *list);
 ptp_pima_prop_desc * ptp_pima_proplist_get_prop(ptp_pima_prop_desc_list *list, ptp_pima_prop_code code);
 ptp_pima_prop_desc * ptp_pima_proplist_get_prop_name(ptp_pima_prop_desc_list *desc, ptp_pima_prop_code code);
 const char *ptp_pima_get_code_name(uint16_t code, const ptp_pima_code_name *names);

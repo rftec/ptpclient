@@ -1,8 +1,11 @@
 #include "ptp-sony.h"
 #include <stdlib.h>
 #include <stdio.h>
+#include <sys/time.h>
+#include "timer.h"
 
-#define PTP_SONY_READ_OPT	0
+#define PTP_SONY_READ_OPT					0
+#define PTP_SONY_ADJUST_PROP_TIMEOUT_SEC	5
 
 static const ptp_pima_code_name g_prop_names[] = {
 	{ PTP_DPC_SONY_DPCCompensation,		"DPC Compensation" },
@@ -35,6 +38,8 @@ static const ptp_pima_code_name g_op_names[] = {
 	{ PTP_OP_SONY_GETALLDEVPROPDATA,	"GetAllDevPropData" },
 	{ 0x0000,							NULL }
 };
+
+typedef int (*compare_func)(void *a, void *b);
 
 #define cr(x)		do { int _cr_ret = x; if (_cr_ret != PTP_OK) return _cr_ret; } while (0)
 
@@ -229,6 +234,32 @@ int ptp_sony_set_control_device_b_u32(ptp_device *dev, uint32_t propcode, uint32
 	return ptp_sony_set_control_device_b(dev, propcode, &value, sizeof(value));
 }
 
+int ptp_sony_adjust_property(ptp_device *dev, ptp_pima_prop_code propcode, int up)
+{
+	int8_t delta = up ? 1 : -1;
+	
+	return ptp_sony_set_control_device_b(dev, propcode, &delta, sizeof(delta));
+}
+
+ptp_pima_prop_desc *ptp_sony_get_property(ptp_device *dev, ptp_pima_prop_desc_list *list, ptp_pima_prop_code propcode)
+{
+	int retval;
+	
+	if (dev == NULL || list == NULL)
+	{
+		return NULL;
+	}
+	
+	retval = ptp_sony_get_all_dev_prop_data(dev, list);
+	
+	if (retval != PTP_OK)
+	{
+		return NULL;
+	}
+	
+	return ptp_pima_proplist_get_prop(list, propcode);
+}
+
 int ptp_sony_wait_object(ptp_device *dev, uint32_t *object_handle, int timeout)
 {
 	ptp_params params;
@@ -356,6 +387,11 @@ int ptp_sony_get_pending_objects(ptp_device *dev)
 	uint32_t data_size;
 	uint16_t val;
 	
+	if (dev == NULL)
+	{
+		return PTP_ERROR_PARAM;
+	}
+	
 	params_out.code = PTP_OP_SONY_GETALLDEVPROPDATA;
 	params_out.num_params = 0;
 	
@@ -382,6 +418,11 @@ int ptp_sony_get_pending_objects(ptp_device *dev)
 	
 	ptp_pima_prop_desc_list *list;
 	int retval;
+	
+	if (dev == NULL)
+	{
+		return PTP_ERROR_PARAM;
+	}
 	
 	retval = ptp_pima_proplist_create(&list);
 	
@@ -419,6 +460,213 @@ int ptp_sony_get_pending_objects(ptp_device *dev)
 	return retval;
 	
 	#endif
+}
+
+static void shutter_speed_normalize(ptp_sony_shutter_speed *sp)
+{
+	if (sp->num > sp->denom)
+	{
+		sp->num /= sp->denom;
+		sp->denom = 1;
+	}
+	else
+	{
+		sp->denom /= sp->num;
+		sp->num = 1;
+	}
+}
+
+static int shutter_speed_compare(ptp_sony_shutter_speed sp1, ptp_sony_shutter_speed sp2)
+{
+	shutter_speed_normalize(&sp1);
+	shutter_speed_normalize(&sp2);
+	
+	if (sp1.num == sp2.num)
+	{
+		if (sp1.denom == sp2.denom)
+		{
+			return 0;
+		}
+		
+		return sp1.denom > sp2.denom ? 1 : -1;
+	}
+	
+	return sp1.num > sp2.num ? -1 : 1;
+}
+
+static ptp_sony_shutter_speed shutter_speed_from_prop(uint32_t value)
+{
+	ptp_sony_shutter_speed sp;
+	
+	sp.num = (value >> 16) & 0xFFFF;
+	sp.denom = value & 0xFFFF;
+	
+	return sp;
+}
+
+static uint32_t shutter_speed_to_prop(ptp_sony_shutter_speed sp)
+{
+	return (((uint32_t)sp.num) << 16) | sp.denom;
+}
+
+static int shutter_speed_compare_prop(void *sp1, void *sp2)
+{
+	return shutter_speed_compare(
+		shutter_speed_from_prop(*((uint32_t *)sp1)), 
+		shutter_speed_from_prop(*((uint32_t *)sp2))
+	);
+}
+
+static int prop_compare_uint16(void *p1, void *p2)
+{
+	uint16_t v1 = *((uint16_t *)p1);
+	uint16_t v2 = *((uint16_t *)p2);
+	
+	if (v1 == v2)
+	{
+		return 0;
+	}
+	
+	return (v1 > v2) ? 1 : -1;
+}
+
+static int prop_compare_uint32(void *p1, void *p2)
+{
+	uint32_t v1 = *((uint32_t *)p1);
+	uint32_t v2 = *((uint32_t *)p2);
+	
+	if (v1 == v2)
+	{
+		return 0;
+	}
+	
+	return (v1 > v2) ? 1 : -1;
+}
+
+int ptp_sony_set_control_prop(ptp_device *dev, ptp_pima_prop_code code, void *value, compare_func compare)
+{
+	int retval, prev_comp, first_iter;
+	ptp_pima_prop_desc_list *list;
+	ptp_pima_prop_desc *prop;
+	ptp_pima_basic_value prev;
+	
+	retval = ptp_pima_proplist_create(&list);
+	
+	if (retval)
+	{
+		return retval;
+	}
+	
+	first_iter = 1;
+	
+	do
+	{	
+		prop = ptp_sony_get_property(dev, list, code);
+		
+		if (!prop)
+		{
+			retval = PTP_ERROR_NOT_FOUND;
+			break;
+		}
+		
+		retval = compare(prop->val.value, value);
+		
+		if (retval == 0) // We got the desired value
+		{
+			retval = PTP_OK;
+			break;
+		}
+		
+		if (!first_iter && retval != prev_comp) // We passed the value, which means there's no such value
+		{
+			retval = PTP_ERROR_PROP_VALUE;
+			break;
+		}
+		
+		prev_comp = retval;
+		
+		retval = ptp_sony_adjust_property(dev, code, (retval < 0) ? 1 : 0);
+		
+		if (retval == PTP_OK)
+		{
+			int done;
+			struct timeval tv;
+			timer tm;
+			
+			prev = *(prop->val.value);
+			done = 0;
+			
+			timer_start(&tm);
+			
+			do
+			{
+				ptp_pima_proplist_clear(list);
+				
+				prop = ptp_sony_get_property(dev, list, code);
+				
+				if (!prop)
+				{
+					retval = PTP_ERROR_NOT_FOUND;
+					break;
+				}
+				
+				if (compare(&prev, prop->val.value) != 0)
+				{
+					break;
+				}
+				
+				timer_elapsed(&tm, &tv);
+				
+				if (tv.tv_sec >= PTP_SONY_ADJUST_PROP_TIMEOUT_SEC)
+				{
+					done = 1;
+				}
+			}
+			while (!done);
+			
+			if (done)
+			{
+				retval = PTP_ERROR_PROP_VALUE;
+			}
+		}
+		
+		ptp_pima_proplist_clear(list);
+		first_iter = 0;
+	}
+	while (retval == PTP_OK);
+	
+	ptp_pima_proplist_free(list);
+	
+	return retval;
+}
+
+int ptp_sony_set_drive_mode(ptp_device *dev, uint16_t mode)
+{
+	return ptp_sony_set_control_device_a_u16(dev, PTP_DPC_StillCaptureMode, mode);
+}
+
+int ptp_sony_set_shutter_speed(ptp_device *dev, const ptp_sony_shutter_speed *speed)
+{
+	uint32_t value;
+	
+	if (speed == NULL)
+	{
+		return PTP_ERROR_PARAM;
+	}
+	
+	value = shutter_speed_to_prop(*speed);
+	
+	return ptp_sony_set_control_prop(dev, PTP_DPC_SONY_ShutterSpeed, &value, shutter_speed_compare_prop);
+}
+
+int ptp_sony_set_fnumber(ptp_device *dev, uint16_t fnumber)
+{
+	return ptp_sony_set_control_prop(dev, PTP_DPC_FNumber, &fnumber, prop_compare_uint16);
+}
+
+int ptp_sony_set_iso(ptp_device *dev, uint32_t iso)
+{
+	return ptp_sony_set_control_prop(dev, PTP_DPC_SONY_ISO, &iso, prop_compare_uint32);
 }
 
 const char *ptp_sony_get_prop_name(ptp_pima_prop_code code)

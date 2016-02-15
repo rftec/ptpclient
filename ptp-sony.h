@@ -38,6 +38,12 @@
 #define PTP_VAL_SONY_SCM_MID			0x8015
 #define PTP_VAL_SONY_SCM_LOW			0x8012
 
+typedef struct _ptp_sony_shutter_speed
+{
+	uint16_t num;
+	uint16_t denom;
+} ptp_sony_shutter_speed;
+
 int ptp_sony_sdio_connect(ptp_device *dev, uint32_t param1, uint32_t param2, uint32_t param3);
 int ptp_sony_get_sdio_ext_devinfo(ptp_device *dev, uint32_t version, ptp_pima_device_info *info);
 int ptp_sony_get_all_dev_prop_data(ptp_device *dev, ptp_pima_prop_desc_list *list);
@@ -47,10 +53,16 @@ int ptp_sony_set_control_device_a_u32(ptp_device *dev, uint32_t propcode, uint32
 int ptp_sony_set_control_device_b(ptp_device *dev, uint32_t propcode, void *value, int size);
 int ptp_sony_set_control_device_b_u16(ptp_device *dev, uint32_t propcode, uint16_t value);
 int ptp_sony_set_control_device_b_u32(ptp_device *dev, uint32_t propcode, uint32_t value);
+int ptp_sony_adjust_property(ptp_device *dev, ptp_pima_prop_code propcode, int up);
+ptp_pima_prop_desc *ptp_sony_get_property(ptp_device *dev, ptp_pima_prop_desc_list *list, ptp_pima_prop_code propcode);
 int ptp_sony_wait_object(ptp_device *dev, uint32_t *object_handle, int timeout);
 int ptp_sony_wait_property(ptp_device *dev, ptp_pima_prop_code *code, int timeout);
 int ptp_sony_wait_pending_object(ptp_device *dev);
 int ptp_sony_get_pending_objects(ptp_device *dev);
+int ptp_sony_set_drive_mode(ptp_device *dev, uint16_t mode);
+int ptp_sony_set_shutter_speed(ptp_device *dev, const ptp_sony_shutter_speed *speed);
+int ptp_sony_set_fnumber(ptp_device *dev, uint16_t fnumber);
+int ptp_sony_set_iso(ptp_device *dev, uint32_t iso);
 
 const char *ptp_sony_get_prop_name(ptp_pima_prop_code code);
 const char *ptp_sony_get_op_name(ptp_pima_op_code code);
