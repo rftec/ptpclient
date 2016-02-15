@@ -13,6 +13,7 @@ def main():
 		pass
 	
 	cam = Camera(vid=VID_SONY, pid=PID_SONY_A6000, image_dir='images')
+	cam.handshake()
 	cam.setparams(drive='low')
 	cam.setparams(iso=1000)
 	cam.setparams(shutter=(1, 2000))
