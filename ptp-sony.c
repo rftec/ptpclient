@@ -462,6 +462,35 @@ int ptp_sony_get_pending_objects(ptp_device *dev)
 	#endif
 }
 
+int ptp_sony_handshake(ptp_device *dev)
+{
+	int ret;
+	
+	ret = ptp_sony_sdio_connect(dev, 1, 0, 0);
+	
+	if (ret == PTP_OK)
+	{
+		ret = ptp_sony_sdio_connect(dev, 2, 0, 0);
+		
+		if (ret == PTP_OK)
+		{
+			ret = ptp_sony_get_sdio_ext_devinfo(dev, 200, NULL);
+			
+			if (ret == PTP_OK)
+			{
+				ret = ptp_sony_get_sdio_ext_devinfo(dev, 200, NULL);
+				
+				if (ret == PTP_OK)
+				{
+					ret = ptp_sony_sdio_connect(dev, 3, 0, 0);
+				}
+			}
+		}
+	}
+	
+	return ret;
+}
+
 static void shutter_speed_normalize(ptp_sony_shutter_speed *sp)
 {
 	if (sp->num > sp->denom)

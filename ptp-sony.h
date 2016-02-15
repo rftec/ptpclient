@@ -59,6 +59,7 @@ int ptp_sony_wait_object(ptp_device *dev, uint32_t *object_handle, int timeout);
 int ptp_sony_wait_property(ptp_device *dev, ptp_pima_prop_code *code, int timeout);
 int ptp_sony_wait_pending_object(ptp_device *dev);
 int ptp_sony_get_pending_objects(ptp_device *dev);
+int ptp_sony_handshake(ptp_device *dev);
 int ptp_sony_set_drive_mode(ptp_device *dev, uint16_t mode);
 int ptp_sony_set_shutter_speed(ptp_device *dev, const ptp_sony_shutter_speed *speed);
 int ptp_sony_set_fnumber(ptp_device *dev, uint16_t fnumber);

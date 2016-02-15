@@ -49,11 +49,13 @@ static void Camera_clear_image_dir(Camera *self);
 static int Camera_init(Camera *self, PyObject *args, PyObject *kwds);
 static int Camera_lock_transfer(Camera *self);
 static void Camera_unlock_transfer(Camera *self);
+static PyObject * Camera_handshake(Camera *self, PyObject *args);
 static PyObject * Camera_start(Camera *self, PyObject *args);
 static PyObject * Camera_stop(Camera *self, PyObject *args);
 static PyObject * Camera_setparams(Camera *self, PyObject *args, PyObject *kwds);
 
 static PyMethodDef Camera_methods[] = {
+	{ "handshake", (PyCFunction)Camera_handshake, METH_VARARGS, "Camera handshake" },
 	{ "start", (PyCFunction)Camera_start, METH_VARARGS, "Start shooting pictures" },
 	{ "stop", (PyCFunction)Camera_stop, METH_VARARGS, "Stop shooting pictures" },
 	{ "setparams", (PyCFunction)Camera_setparams, METH_VARARGS | METH_KEYWORDS, "Set camera parameters" },
@@ -602,6 +604,36 @@ static int Camera_lock_transfer(Camera *self)
 static void Camera_unlock_transfer(Camera *self)
 {
 	pthread_mutex_unlock(&self->mutex_transfer);
+}
+
+
+static PyObject * Camera_handshake(Camera *self, PyObject *args)
+{
+	int ret;
+	
+	if (!self->ptpdev)
+	{
+		PyErr_SetString(PyExc_RuntimeError, "The camera has not been initialized.");
+		return NULL;
+	}
+	
+	if (Camera_lock_transfer(self) != 0)
+	{
+		return NULL;
+	}
+	
+	ret = ptp_sony_handshake(self->ptpdev);
+	
+	if (ret != PTP_OK)
+	{
+		Camera_unlock_transfer(self);
+		PyErr_Format(PyExc_RuntimeError, "Handshake failed: PTP error %d", ret);
+		return NULL;
+	}
+	
+	Camera_unlock_transfer(self);
+	
+	return Py_None;
 }
 
 static PyObject * Camera_start(Camera *self, PyObject *args)
