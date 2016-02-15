@@ -55,9 +55,9 @@ static PyObject * Camera_stop(Camera *self, PyObject *args);
 static PyObject * Camera_setparams(Camera *self, PyObject *args, PyObject *kwds);
 
 static PyMethodDef Camera_methods[] = {
-	{ "handshake", (PyCFunction)Camera_handshake, METH_VARARGS, "Camera handshake" },
-	{ "start", (PyCFunction)Camera_start, METH_VARARGS, "Start shooting pictures" },
-	{ "stop", (PyCFunction)Camera_stop, METH_VARARGS, "Stop shooting pictures" },
+	{ "handshake", (PyCFunction)Camera_handshake, METH_NOARGS, "Camera handshake" },
+	{ "start", (PyCFunction)Camera_start, METH_NOARGS, "Start shooting pictures" },
+	{ "stop", (PyCFunction)Camera_stop, METH_NOARGS, "Stop shooting pictures" },
 	{ "setparams", (PyCFunction)Camera_setparams, METH_VARARGS | METH_KEYWORDS, "Set camera parameters" },
 	{ NULL }
 };
