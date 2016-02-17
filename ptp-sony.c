@@ -698,6 +698,39 @@ int ptp_sony_set_iso(ptp_device *dev, uint32_t iso)
 	return ptp_sony_set_control_prop(dev, PTP_DPC_SONY_ISO, &iso, prop_compare_uint32);
 }
 
+int ptp_sony_get_battery(ptp_device *dev)
+{
+	int retval;
+	ptp_pima_prop_desc *prop;
+	ptp_pima_prop_desc_list *list;
+	
+	if (!dev)
+	{
+		return PTP_ERROR_PARAM;
+	}
+	retval = ptp_pima_proplist_create(&list);
+	
+	if (retval)
+	{
+		return retval;
+	}
+	
+	prop = ptp_sony_get_property(dev, list, PTP_DPC_SONY_BatteryLevel);
+	
+	if (prop != NULL)
+	{
+		retval = prop->val.value->u16;
+	}
+	else
+	{
+		return PTP_ERROR_NOT_FOUND;
+	}
+	
+	ptp_pima_proplist_free(list);
+	
+	return retval;
+}
+
 const char *ptp_sony_get_prop_name(ptp_pima_prop_code code)
 {
 	const char *name;

@@ -53,12 +53,14 @@ static PyObject * Camera_handshake(Camera *self, PyObject *args);
 static PyObject * Camera_start(Camera *self, PyObject *args);
 static PyObject * Camera_stop(Camera *self, PyObject *args);
 static PyObject * Camera_setparams(Camera *self, PyObject *args, PyObject *kwds);
+static PyObject * Camera_getbattery(Camera *self, PyObject *args);
 
 static PyMethodDef Camera_methods[] = {
 	{ "handshake", (PyCFunction)Camera_handshake, METH_NOARGS, "Camera handshake" },
 	{ "start", (PyCFunction)Camera_start, METH_NOARGS, "Start shooting pictures" },
 	{ "stop", (PyCFunction)Camera_stop, METH_NOARGS, "Stop shooting pictures" },
 	{ "setparams", (PyCFunction)Camera_setparams, METH_VARARGS | METH_KEYWORDS, "Set camera parameters" },
+	{ "getbattery", (PyCFunction)Camera_getbattery, METH_NOARGS, "Get battery level" },
 	{ NULL }
 };
 
@@ -872,4 +874,32 @@ static PyObject * Camera_setparams(Camera *self, PyObject *args, PyObject *kwds)
 	Camera_unlock_transfer(self);
 	
 	return Py_None;
+}
+
+static PyObject * Camera_getbattery(Camera *self, PyObject *args)
+{
+	int ret;
+	
+	if (!self->ptpdev)
+	{
+		PyErr_SetString(PyExc_RuntimeError, "The camera has not been initialized.");
+		return NULL;
+	}
+	
+	if (Camera_lock_transfer(self) != 0)
+	{
+		return NULL;
+	}
+	
+	ret = ptp_sony_get_battery(self->ptpdev);
+	
+	Camera_unlock_transfer(self);
+	
+	if (ret < 0)
+	{
+		PyErr_Format(PyExc_RuntimeError, "Could not get battery level: PTP error %d", ret);
+		return NULL;
+	}
+	
+	return PyInt_FromLong(ret);
 }
