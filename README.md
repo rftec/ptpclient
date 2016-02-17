@@ -37,7 +37,7 @@ Go to a directory of your choice and clone the repository:
 
 Make sure to install libusb-1.0, do not confuse it with libusb-0.1:
 
-    sudo apt-get install libusb-1.0-dev
+    sudo apt-get install libusb-1.0-0-dev
 
 ### Install Python ###
 
