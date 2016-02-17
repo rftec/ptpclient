@@ -26,6 +26,7 @@ typedef uint16_t	ptp_pima_type_code;
 typedef uint16_t	ptp_pima_op_code;
 
 #define PTP_RC_OK					0x2001
+#define PTP_RC_SESSION_ALREADY_OPEN	0x201E
 
 #define PTP_OP_PIMA_GetDeviceInfo		0x1001
 #define PTP_OP_PIMA_OpenSession			0x1002

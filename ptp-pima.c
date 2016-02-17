@@ -92,7 +92,7 @@ int ptp_pima_open_session(ptp_device *dev, uint32_t session_id)
 		return retval;
 	}
 	
-	if (params_in.code != PTP_RC_OK)
+	if (params_in.code != PTP_RC_OK && params_in.code != PTP_RC_SESSION_ALREADY_OPEN)
 	{
 		return PTP_ERROR_RC;
 	}
