@@ -316,51 +316,80 @@ static int ptp_bulk_transfer(ptp_device *dev, unsigned char endpoint, void *data
 {
 	int completed = 0;
 	int r;
-
-	if (!dev->bulk_xfer)
+	
+	if (!transferred)
 	{
-		return libusb_bulk_transfer(dev->usbdev, endpoint, data, length, transferred, 0);
+		return PTP_ERROR_PARAM;
 	}
 
-	libusb_fill_bulk_transfer(dev->bulk_xfer, dev->usbdev, endpoint, data, length, ptp_bulk_callback, &completed, 0);
-	dev->bulk_xfer->type = LIBUSB_TRANSFER_TYPE_BULK;
-
-	r = libusb_submit_transfer(dev->bulk_xfer);
-	
-	if (r < 0)
+	if (endpoint & 0x80)
 	{
+		// IN endpoint
+		
+		do
+		{
+			*transferred = 0;
+			r = libusb_bulk_transfer(dev->usbdev, endpoint, data, length, transferred, 0);
+			
+			if (r == 0 && *transferred == 0)
+			{
+				fprintf(stderr, "WARNING: Detected zero-length packet\n");
+			}
+		}
+		while (r == 0 && *transferred == 0);
+		
 		return r;
 	}
-
-	ptp_transfer_wait_for_completion(dev);
-
-	*transferred = dev->bulk_xfer->actual_length;
-	switch (dev->bulk_xfer->status) {
-	case LIBUSB_TRANSFER_COMPLETED:
-		r = 0;
-		break;
-	case LIBUSB_TRANSFER_TIMED_OUT:
-		r = LIBUSB_ERROR_TIMEOUT;
-		break;
-	case LIBUSB_TRANSFER_STALL:
-		r = LIBUSB_ERROR_PIPE;
-		break;
-	case LIBUSB_TRANSFER_OVERFLOW:
-		r = LIBUSB_ERROR_OVERFLOW;
-		break;
-	case LIBUSB_TRANSFER_NO_DEVICE:
-		r = LIBUSB_ERROR_NO_DEVICE;
-		break;
-	case LIBUSB_TRANSFER_ERROR:
-	case LIBUSB_TRANSFER_CANCELLED:
-		r = LIBUSB_ERROR_IO;
-		break;
+	else
+	{
+		// OUT endpoint
 		
-	default:
-		r = LIBUSB_ERROR_OTHER;
+		if (!dev->bulk_xfer)
+		{
+			return libusb_bulk_transfer(dev->usbdev, endpoint, data, length, transferred, 0);
+		}
+
+		libusb_fill_bulk_transfer(dev->bulk_xfer, dev->usbdev, endpoint, data, length, ptp_bulk_callback, &completed, 0);
+		dev->bulk_xfer->type = LIBUSB_TRANSFER_TYPE_BULK;
+
+		completed = 0;
+		r = libusb_submit_transfer(dev->bulk_xfer);
+		
+		if (r < 0)
+		{
+			return r;
+		}
+
+		ptp_transfer_wait_for_completion(dev);
+			
+		*transferred = dev->bulk_xfer->actual_length;
+		switch (dev->bulk_xfer->status) {
+		case LIBUSB_TRANSFER_COMPLETED:
+			r = 0;
+			break;
+		case LIBUSB_TRANSFER_TIMED_OUT:
+			r = LIBUSB_ERROR_TIMEOUT;
+			break;
+		case LIBUSB_TRANSFER_STALL:
+			r = LIBUSB_ERROR_PIPE;
+			break;
+		case LIBUSB_TRANSFER_OVERFLOW:
+			r = LIBUSB_ERROR_OVERFLOW;
+			break;
+		case LIBUSB_TRANSFER_NO_DEVICE:
+			r = LIBUSB_ERROR_NO_DEVICE;
+			break;
+		case LIBUSB_TRANSFER_ERROR:
+		case LIBUSB_TRANSFER_CANCELLED:
+			r = LIBUSB_ERROR_IO;
+			break;
+			
+		default:
+			r = LIBUSB_ERROR_OTHER;
+		}
+		
+		return r;
 	}
-	
-	return r;
 }
 
 static int ptp_send(ptp_device *dev, void *data, int size)
@@ -377,11 +406,13 @@ static int ptp_send(ptp_device *dev, void *data, int size)
 			
 			if (i == PTP_RETRY_COUNT - 1)
 			{
+				fprintf(stderr, "[ptp_send] ptp_bulk_transfer: LIBUSB_ERROR_PIPE\n");
 				return retval;
 			}
 		}
 		else if (retval != 0)
 		{
+			fprintf(stderr, "[ptp_send] ptp_bulk_transfer: %d\n", retval);
 			return retval;
 		}
 		else
@@ -401,6 +432,7 @@ int ptp_send_command(ptp_device *dev, const ptp_params *params)
 	
 	if (!dev || !params || params->num_params > PTP_MAX_PARAMS)
 	{
+		fprintf(stderr, "[ptp_send_command] PTP_ERROR_PARAM\n");
 		return PTP_ERROR_PARAM;
 	}
 	
@@ -426,6 +458,7 @@ int ptp_send_data(ptp_device *dev, uint16_t code, const void *data, int size)
 	
 	if (!dev || !data || size < 0)
 	{
+		fprintf(stderr, "[ptp_send_data] PTP_ERROR_PARAM\n");
 		return PTP_ERROR_PARAM;
 	}
 	
@@ -433,6 +466,7 @@ int ptp_send_data(ptp_device *dev, uint16_t code, const void *data, int size)
 	
 	if (!container)
 	{
+		fprintf(stderr, "[ptp_send_data] Invalid container: PTP_ERROR_MEMORY\n");
 		return PTP_ERROR_MEMORY;
 	}
 	
@@ -460,18 +494,21 @@ int ptp_recv_response(ptp_device *dev, ptp_params *params)
 	
 	if (!dev || !params)
 	{
+		fprintf(stderr, "[ptp_recv_response] PTP_ERROR_PARAM\n");
 		return PTP_ERROR_PARAM;
 	}
 	
-	retval = libusb_bulk_transfer(dev->usbdev, PTP_EP_IN, (unsigned char *)&response, sizeof(response), &transferred, 0);
+	retval = ptp_bulk_transfer(dev, PTP_EP_IN, &response, sizeof(response), &transferred);
 	
 	if (retval != 0 && retval != LIBUSB_ERROR_TIMEOUT)
 	{
+		fprintf(stderr, "[ptp_recv_response] ptp_bulk_transfer: %d\n", retval);
 		return retval;
 	}
 	
 	if (transferred < sizeof(response.container))
 	{
+		fprintf(stderr, "[ptp_recv_response] Data length too short: transferred=%d, retval=%d\n", transferred, retval);
 		return PTP_ERROR_DATA_LEN;
 	}
 	
@@ -479,16 +516,19 @@ int ptp_recv_response(ptp_device *dev, ptp_params *params)
 	
 	if (len != (uint32_t)transferred)
 	{
+		fprintf(stderr, "[ptp_recv_response] Transfer length mismatch: transferred=%d, expected=%u, retval=%d\n", transferred, len, retval);
 		return retval ? retval : PTP_ERROR_DATA_LEN;
 	}
 	
 	if (dtoh32(response.container.transaction_id) != dev->transaction_id)
 	{
+		fprintf(stderr, "[ptp_recv_response] PTP_ERROR_CONTAINER_ID\n");
 		return PTP_ERROR_TRANSACTION_ID;
 	}
 	
 	if (response.container.type != htod32(PTP_TYPE_RESPONSE))
 	{
+		fprintf(stderr, "[ptp_recv_response] PTP_ERROR_CONTAINER_TYPE\n");
 		return PTP_ERROR_CONTAINER_TYPE;
 	}
 	
@@ -512,6 +552,7 @@ int ptp_recv_data(ptp_device *dev, void **data)
 	
 	if (!dev || !data)
 	{
+		fprintf(stderr, "[ptp_recv_data] PTP_ERROR_PARAM\n");
 		return PTP_ERROR_PARAM;
 	}
 	
@@ -519,20 +560,21 @@ int ptp_recv_data(ptp_device *dev, void **data)
 	
 	if (!container)
 	{
+		fprintf(stderr, "[ptp_recv_data] Invalid container (PTP_ERROR_MEMORY)\n");
 		return PTP_ERROR_MEMORY;
 	}
 	
-	retval = libusb_bulk_transfer(dev->usbdev, PTP_EP_IN, (unsigned char *)container, dev->recv_size, &transferred, 0);
+	retval = ptp_bulk_transfer(dev, PTP_EP_IN, container, dev->recv_size, &transferred);
 	
 	if (retval != 0 && retval != LIBUSB_ERROR_TIMEOUT)
 	{
-		printf("libusb_bulk_transfer (1): %d\n", retval);
+		fprintf(stderr, "[ptp_recv_data] ptp_bulk_transfer: %d\n", retval);
 		return retval;
 	}
 	
 	if (transferred < sizeof(ptp_container))
 	{
-		printf("libusb_bulk_transfer (2): transferred=%d (too short)\n", transferred);
+		fprintf(stderr, "[ptp_recv_data] Data length too short: transferred=%d, retval=%d\n", transferred, retval);
 		return retval ? retval : PTP_ERROR_DATA_LEN;
 	}
 	
@@ -540,19 +582,19 @@ int ptp_recv_data(ptp_device *dev, void **data)
 	
 	if (len > transferred && transferred < dev->recv_size)
 	{
-		printf("libusb_bulk_transfer (3): transferred=%d, len=%d (early termination)\n", transferred, len);
+		fprintf(stderr, "[ptp_recv_data] Early termination: transferred=%d, len=%d, retval=%d\n", transferred, len, retval);
 		return retval ? retval : PTP_ERROR_DATA_LEN;
 	}
 	
 	if (dtoh32(container->transaction_id) != dev->transaction_id)
 	{
-		printf("libusb_bulk_transfer (4): transaction_id=0x%08x, expected=0x%08x\n", dtoh32(container->transaction_id), dev->transaction_id);
+		fprintf(stderr, "[ptp_recv_data] Transaction ID mismatch: transaction_id=0x%08x, expected=0x%08x\n", dtoh32(container->transaction_id), dev->transaction_id);
 		return PTP_ERROR_TRANSACTION_ID;
 	}
 	
 	if (container->type != htod32(PTP_TYPE_DATA))
 	{
-		printf("libusb_bulk_transfer (5): type mismatch\n");
+		fprintf(stderr, "[ptp_recv_data] PTP_ERROR_CONTAINER_TYPE\n");
 		return PTP_ERROR_CONTAINER_TYPE;
 	}
 	
@@ -561,6 +603,7 @@ int ptp_recv_data(ptp_device *dev, void **data)
 	
 	if (!buf)
 	{
+		fprintf(stderr, "[ptp_recv_data] Could not allocate buffer (PTP_ERROR_MEMORY)\n");
 		return PTP_ERROR_MEMORY;
 	}
 	
@@ -581,14 +624,14 @@ int ptp_recv_data(ptp_device *dev, void **data)
 		if (retval != 0 && retval != LIBUSB_ERROR_TIMEOUT)
 		{
 			free(buf);
-			printf("libusb_bulk_transfer #2: %d\n", retval);
+			fprintf(stderr, "[ptp_recv_data] ptp_bulk_transfer #2: %d\n", retval);
 			return retval;
 		}
 		
 		if ((uint32_t)transferred != remaining)
 		{
 			free(buf);
-			printf("libusb_bulk_transfer #2: transferred=%d, remaining=%d\n", transferred, (int)remaining);
+			fprintf(stderr, "[ptp_recv_data] ptp_bulk_transfer #2: transferred=%d, remaining=%d\n", transferred, (int)remaining);
 			return retval ? retval : PTP_ERROR_DATA_LEN;
 		}
 	}
@@ -608,6 +651,7 @@ int ptp_transact(
 	if (!params_out || !params_in || params_out->num_params > PTP_MAX_PARAMS || 
 		(data_out && data_in) || (data_in && !data_in_size))
 	{
+		fprintf(stderr, "[ptp_transact] PTP_ERROR_PARAM\n");
 		return PTP_ERROR_PARAM;
 	}
 	
@@ -625,7 +669,7 @@ int ptp_transact(
 	
 	if (retval != PTP_OK)
 	{
-		printf("ptp_send_command: %d\n", retval);
+		fprintf(stderr, "[ptp_transact] ptp_send_command: %d\n", retval);
 		return retval;
 	}
 	
@@ -635,7 +679,7 @@ int ptp_transact(
 		
 		if (retval != PTP_OK)
 		{
-			printf("ptp_send_data: %d\n", retval);
+			fprintf(stderr, "[ptp_transact] ptp_send_data: %d\n", retval);
 			return retval;
 		}
 	}
@@ -645,7 +689,7 @@ int ptp_transact(
 		
 		if (retval < 0)
 		{
-			printf("ptp_recv_data: %d\n", retval);
+			fprintf(stderr, "[ptp_transact] ptp_recv_data: %d\n", retval);
 			return retval;
 		}
 		
@@ -661,7 +705,7 @@ int ptp_transact(
 			free(temp_data_in);
 		}
 		
-		printf("ptp_recv_response: %d\n", retval);
+		fprintf(stderr, "[ptp_transact] ptp_recv_response: %d\n", retval);
 	}
 	else if (data_in)
 	{
@@ -680,6 +724,7 @@ int ptp_wait_event(ptp_device *dev, ptp_params *params, int timeout)
 	
 	if (!dev || !params)
 	{
+		fprintf(stderr, "[ptp_wait_event] PTP_ERROR_PARAM\n");
 		return PTP_ERROR_PARAM;
 	}
 	
@@ -687,12 +732,13 @@ int ptp_wait_event(ptp_device *dev, ptp_params *params, int timeout)
 	
 	if (retval != 0 && retval != LIBUSB_ERROR_TIMEOUT)
 	{
-		printf("libusb_interrupt_transfer: %d\n", retval);
+		fprintf(stderr, "[ptp_wait_event] libusb_interrupt_transfer: %d\n", retval);
 		return retval;
 	}
 	
 	if (transferred < sizeof(event.container))
 	{
+		fprintf(stderr, "[ptp_wait_event] Data length too short: transferred=%d, retval=%d\n", transferred, retval);
 		return retval ? retval : PTP_ERROR_DATA_LEN;
 	}
 	
@@ -700,11 +746,13 @@ int ptp_wait_event(ptp_device *dev, ptp_params *params, int timeout)
 	
 	if (len != (uint32_t)transferred)
 	{
+		fprintf(stderr, "[ptp_wait_event] Transfer length mismatch: transferred=%d, expected=%u, retval=%d\n", transferred, len, retval);
 		return retval ? retval : PTP_ERROR_DATA_LEN;
 	}
 	
 	if (event.container.type != htod32(PTP_TYPE_EVENT))
 	{
+		fprintf(stderr, "[ptp_wait_event] PTP_ERROR_CONTAINER_TYPE\n");
 		return PTP_ERROR_CONTAINER_TYPE;
 	}
 	
