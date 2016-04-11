@@ -6,6 +6,8 @@
 #include <python2.7/Python.h>
 #include <python2.7/structmember.h>
 #include <stdio.h>
+#include <stdarg.h>
+#include <sys/time.h>
 #include "ptp.h"
 #include "ptp-pima.h"
 #include "ptp-sony.h"
@@ -16,6 +18,7 @@
 #define POLL_TIMEOUT_SEC					1
 #define TRANSFER_LOCK_NORMAL_TIMEOUT_SEC	5
 #define TRANSFER_LOCK_THREAD_TIMEOUT_SEC	1
+#define LOG_ENABLE							0
 
 typedef enum {
 	TSS_INVALID = 0,
@@ -115,23 +118,42 @@ static PyMethodDef pyptp_Methods[] = {
 	{ NULL }
 };
 
+#if defined(LOG_ENABLE) && LOG_ENABLE != 0
+static void pyptp_log(const char *format, ...)
+{
+	struct timeval tv;
+	va_list args;
+
+	va_start(args, format);
+
+	gettimeofday(&tv, NULL);
+	printf("<%llu.%06lld> ", (unsigned long long)tv.tv_sec, (long long)tv.tv_usec);
+	vprintf(format, args);
+
+	va_end(args);
+}
+#else
+#define pyptp_log(...)
+#endif
+
 static int pthread_mutex_timedlock_sec(pthread_mutex_t *mutex, unsigned int sec)
 {
 	struct timespec ts;
-	
+
 	clock_gettime(CLOCK_REALTIME, &ts);
-	
+
 	ts.tv_sec += sec;
-	
+
 	return pthread_mutex_timedlock(mutex, &ts);
 }
 
 static void pyptp_event_callback(ptp_device *dev, const ptp_params *params, void *ctx)
 {
 	Camera *self = (Camera *)ctx;
-	
+
 	if (params->code == PTP_EC_SONY_ObjectAdded)
 	{
+		pyptp_log("Posting ObjectAdded event\n");
 		sem_post(&self->sem_event);
 	}
 }
@@ -140,24 +162,24 @@ static void pyptp_call_callback(Camera *self, const char *path)
 {
 	PyObject *args, *res;
 	PyGILState_STATE gstate;
-	
+
 	if (self->callback == NULL)
 	{
 		return;
 	}
-	
+
 	gstate = PyGILState_Ensure();
-	
+
 	res = Py_BuildValue("(s)", path);
-	
+
 	if (res)
 	{
 		args = res;
 		res = PyObject_CallObject(self->callback, args);
-		
+
 		Py_DECREF(args);
 	}
-	
+
 	if (!res)
 	{
 		PyErr_Print();
@@ -167,62 +189,98 @@ static void pyptp_call_callback(Camera *self, const char *path)
 	{
 		Py_DECREF(res);
 	}
-	
+
 	PyGILState_Release(gstate);
 }
 
-static int pyptp_transfer_image(Camera *self, uint32_t handle)
+static int pyptp_transfer_image(Camera *self, uint32_t handle, uint8_t unlock)
 {
 	int retval, image_size;
 	void *image_data;
-	
+
+	pyptp_log("pyptp_transfer_image: Getting object info\n");
+
 	// Get the object's info
 	retval = ptp_pima_get_object_info(self->ptpdev, handle, NULL);
-	
+
 	if (retval != PTP_OK)
 	{
+		pyptp_log("pyptp_transfer_image: Get object info failed: %d\n", retval);
+
+		if (unlock)
+		{
+			pyptp_log("pyptp_transfer_image: Unlocking transfer mutex after failure\n");
+			pthread_mutex_unlock(&self->mutex_transfer);
+		}
+
 		return retval;
 	}
-	
+
+	pyptp_log("pyptp_transfer_image: Getting object data\n");
+
 	// Get the object's data
 	retval = ptp_pima_get_object(self->ptpdev, handle, &image_data);
-	
+
+	// Unlock the transfer mutex if needed
+	if (unlock)
+	{
+		pyptp_log("pyptp_transfer_image: Unlocking transfer mutex\n");
+		pthread_mutex_unlock(&self->mutex_transfer);
+	}
+
 	if (retval >= 0)
 	{
 		char image_path[MAX_IMAGE_PATH + 1];
-		
+
+		pyptp_log("pyptp_transfer_image: Got %d bytes\n", retval);
+
 		image_size = retval;
-		
+
 		retval = snprintf(image_path, MAX_IMAGE_PATH, "%s/image-%u.jpg", self->image_dir, self->image_index);
-		
+
 		if (retval < 0 || retval > MAX_IMAGE_PATH)
 		{
+			pyptp_log("pyptp_transfer_image: Could not create image filename\n");
 			// Could not create filename, drop image
 		}
 		else
 		{
 			FILE *f;
-			
+
 			image_path[MAX_IMAGE_PATH] = '\0';
-			
+
+			pyptp_log("pyptp_transfer_image: Opening \"%s\" for writing\n", image_path);
 			f = fopen(image_path, "wb");
-			
+
 			if (f)
 			{
+				pyptp_log("pyptp_transfer_image: Writing image data\n");
 				fwrite(image_data, 1, image_size, f);
+
+				pyptp_log("pyptp_transfer_image: Closing file\n");
 				fclose(f);
-				
+
+				pyptp_log("pyptp_transfer_image: Calling callback\n");
 				pyptp_call_callback(self, image_path);
+				pyptp_log("pyptp_transfer_image: Callback done\n");
+			}
+			else
+			{
+				pyptp_log("pyptp_transfer_image: Could not open file\n");
 			}
 		}
-		
+
 		free(image_data);
-		
+
 		self->image_index++;
-		
+
 		retval = PTP_OK;
 	}
-	
+	else
+	{
+		pyptp_log("pyptp_transfer_image: Get object data failed: %d\n", retval);
+	}
+
 	return retval;
 }
 
@@ -231,89 +289,127 @@ static void *pyptp_transfer_thread(void *ctx)
 	int ret, ready, pending, locked;
 	Camera *self = (Camera *)ctx;
 	struct timespec ts;
-	
+
 	while (1)
 	{
 		// Reset the ready/pending count
 		ready = 0;
 		pending = 0;
 		locked = 0;
-		
+
 		clock_gettime(CLOCK_REALTIME, &ts);
-		
+
 		ts.tv_sec += POLL_TIMEOUT_SEC;
-		
+
+		pyptp_log("Thread: Waiting event semaphore\n");
+
 		// Wait for an event at most POLL_TIMEOUT_SEC seconds
 		ret = sem_timedwait(&self->sem_event, &ts);
-		
+
 		if (ret != 0)
 		{
+			pyptp_log("Thread: Wait failed: %d\n", ret);
+
 			// Did not get an event
 			if (errno == ETIMEDOUT) // Poll if timed out
 			{
+				pyptp_log("Thread: Wait timed out: Locking transfer mutex\n");
+
 				ret = pthread_mutex_timedlock_sec(&self->mutex_transfer, TRANSFER_LOCK_THREAD_TIMEOUT_SEC);
-				
+
 				if (ret != 0)
 				{
+					pyptp_log("Thread: Lock failed: %d\n", ret);
 					continue;
 				}
-				
+
+				pyptp_log("Thread: Lock succeeded, getting pending objects\n");
+
 				ret = ptp_sony_get_pending_objects(self->ptpdev);
-				
+
 				if (ret < 0)
 				{
+					pyptp_log("Thread: Get failed, unlocking\n");
+
 					// Failed to get pending objects, try again
 					pthread_mutex_unlock(&self->mutex_transfer);
 					continue;
 				}
-				
+
 				pending = ret & 0x7FFF;
 				ready = (ret & 0x8000) ? 1 : 0;
-				
+
 				if (!ready)
 				{
+					pyptp_log("Thread: Not ready, unlocking\n");
+
 					// Image not ready, try again
 					pthread_mutex_unlock(&self->mutex_transfer);
 					continue;
 				}
-				
+
+				pyptp_log("Thread: %d pending objects\n", pending);
+
 				// Image ready, carry on to transfer
 				locked = 1;
 			}
 			else
 			{
+				pyptp_log("Thread: Wait failure not due to timeout\n");
+
 				// Try again
 				continue;
 			}
 		}
-		
+
 		// Check if we should stop, but only if there are no more pending images
 		if (pending == 0 && !locked)
 		{
+			pyptp_log("Thread: Checking stop semaphore\n");
+
 			ret = sem_trywait(&self->sem_stop);
-			
+
 			if (ret == 0)
 			{
+				pyptp_log("Thread: Check succeeded, stopping thread\n");
+
 				// Succeeded, stop the thread
 				return NULL;
 			}
+
+			pyptp_log("Thread: Check failed (%d), not stopping\n", ret);
 		}
-		
+
 		if (!locked)
 		{
+			pyptp_log("Thread: Mutex not locked, locking\n");
+
 			ret = pthread_mutex_timedlock_sec(&self->mutex_transfer, TRANSFER_LOCK_THREAD_TIMEOUT_SEC);
-			
+
 			if (ret != 0)
 			{
+				pyptp_log("Thread: Lock failed: %d\n", ret);
+
 				// Failed to lock, try again next time
 				continue;
 			}
+
+			pyptp_log("Thread: Lock succeeded\n");
 		}
-		
+		else
+		{
+			pyptp_log("Thread: Mutex already locked\n");
+		}
+
+		pyptp_log("Thread: Transferring image\n");
+
 		// Transfer image
-		ret = pyptp_transfer_image(self, 0xFFFFC001);
-		
-		pthread_mutex_unlock(&self->mutex_transfer);
+		ret = pyptp_transfer_image(self, 0xFFFFC001, 1);
+
+		pyptp_log("Thread: Transfer image result: %d\n", ret);
+		//pyptp_log("Thread: Done, unlocking\n");
+
+		//pthread_mutex_unlock(&self->mutex_transfer);
 	}
 }
 
@@ -321,7 +417,7 @@ PyMODINIT_FUNC
 initpyptp(void)
 {
 	PyObject* m;
-	
+
 	if (PyType_Ready(&pyptp_CameraType) < 0)
 	{
 		return;
@@ -337,37 +433,37 @@ static void Camera_dealloc(Camera *self)
 {
 	Camera_clear_image_dir(self);
 	Camera_stop_transfer(self);
-	
+
 	if (self->ptpdev)
 	{
 		ptp_device_free(self->ptpdev);
 		self->ptpdev = NULL;
 	}
-	
+
 	if (self->usbdev)
 	{
 		usb_close(self->usbdev);
 		self->usbdev = NULL;
 	}
-	
+
 	if (self->usbctx)
 	{
 		usb_exit(self->usbctx);
 		self->usbctx = NULL;
 	}
-	
+
 	Py_XDECREF(self->callback);
 	self->callback = NULL;
-	
+
 	self->ob_type->tp_free((PyObject *)self);
 }
 
 static PyObject * Camera_new(PyTypeObject *type, PyObject *args, PyObject *kwds)
 {
 	Camera *self;
-	
+
 	self = (Camera *)type->tp_alloc(type, 0);
-	
+
 	if (self != NULL)
 	{
 		self->usbctx = NULL;
@@ -385,33 +481,33 @@ static PyObject * Camera_new(PyTypeObject *type, PyObject *args, PyObject *kwds)
 static int Camera_init_semaphores(Camera *self)
 {
 	int ret;
-	
+
 	self->transfer_state = TSS_INVALID;
-	
+
 	ret = sem_init(&self->sem_stop, 0, 0);
-	
+
 	if (ret)
 	{
 		return -1;
 	}
-	
+
 	ret = sem_init(&self->sem_event, 0, 0);
-	
+
 	if (ret)
 	{
 		sem_destroy(&self->sem_stop);
 		return -1;
 	}
-	
+
 	ret = pthread_mutex_init(&self->mutex_transfer, NULL);
-	
+
 	if (ret)
 	{
 		sem_destroy(&self->sem_event);
 		sem_destroy(&self->sem_stop);
 		return -1;
 	}
-	
+
 	self->transfer_state = TSS_SEM_VALID;
 	return 0;
 }
@@ -422,38 +518,38 @@ static void Camera_free_semaphores(Camera *self)
 	{
 		return;
 	}
-	
+
 	if (self->transfer_state > TSS_SEM_VALID)
 	{
 		Camera_stop_transfer(self);
 	}
-	
+
 	// Destroy everything
 	pthread_mutex_destroy(&self->mutex_transfer);
 	sem_destroy(&self->sem_event);
 	sem_destroy(&self->sem_stop);
-	
+
 	self->transfer_state = TSS_INVALID;
 }
 
 static int Camera_start_transfer(Camera *self)
 {
 	int ret;
-	
+
 	if (self->transfer_state < TSS_SEM_VALID)
 	{
 		return -1;
 	}
-	
+
 	self->transfer_state = TSS_SEM_VALID;
-	
+
 	ret = pthread_create(&self->thread_transfer, NULL, pyptp_transfer_thread, self);
-	
+
 	if (ret)
 	{
 		return -1;
 	}
-	
+
 	self->transfer_state = TSS_THREAD_VALID;
 	return 0;
 }
@@ -464,16 +560,16 @@ static void Camera_stop_transfer(Camera *self)
 	{
 		return;
 	}
-	
+
 	// Signal the transfer thread to stop
 	sem_post(&self->sem_stop);
-	
+
 	// Make sure that the transfer thread has woken up
 	sem_post(&self->sem_event);
-	
+
 	// Wait for the thread
 	pthread_join(self->thread_transfer, NULL);
-	
+
 	self->transfer_state = TSS_SEM_VALID;
 }
 
@@ -483,9 +579,9 @@ static int Camera_set_image_dir(Camera *self, const char *dir)
 	{
 		dir = ".";
 	}
-	
+
 	self->image_dir = strdup(dir);
-	
+
 	return (self->image_dir != NULL) ? 0 : -1;
 }
 
@@ -501,7 +597,7 @@ static void Camera_clear_image_dir(Camera *self)
 static int Camera_init(Camera *self, PyObject *args, PyObject *kwds)
 {
 	static char *kwlist[] = { "vid", "pid", "image_dir", "callback", NULL };
-	
+
 	int vid, pid;
 	int ret;
 	const char *image_dir;
@@ -509,80 +605,80 @@ static int Camera_init(Camera *self, PyObject *args, PyObject *kwds)
 	usb_device_handle *usbdev;
 	ptp_device *ptpdev;
 	PyObject *callback;
-	
+
 	// Parse the keyword arguments
 	if (!PyArg_ParseTupleAndKeywords(args, kwds, "ii|zO", kwlist, &vid, &pid, &image_dir, &callback))
 	{
 		return -1;
 	}
-	
+
 	if (vid < 0 || vid > 0xFFFF)
 	{
 		PyErr_SetString(PyExc_ValueError, "Vendor ID out of range");
 		return -1;
 	}
-	
+
 	if (pid < 0 || pid > 0xFFFF)
 	{
 		PyErr_SetString(PyExc_ValueError, "Product ID out of range");
 		return -1;
 	}
-	
+
 	// Stop the transfer thread
 	Camera_stop_transfer(self);
-	
+
 	// Close the previous device
 	if (self->ptpdev)
 	{
 		ptp_device_free(self->ptpdev);
 		self->ptpdev = NULL;
 	}
-	
+
 	if (self->usbdev)
 	{
 		usb_close(self->usbdev);
 		self->usbdev = NULL;
 	}
-	
+
 	Camera_free_semaphores(self);
-	
+
 	// Clear the previous image directory string
 	Camera_clear_image_dir(self);
-	
+
 	// Remove the previous callback
 	Py_XDECREF(self->callback);
 	self->callback = NULL;
-	
+
 	// Set the new callback
 	if (!PyCallable_Check(callback))
 	{
 		PyErr_SetString(PyExc_TypeError, "Callback is not callable");
 		return -1;
 	}
-	
+
 	Py_XINCREF(callback);
 	self->callback = callback;
-	
+
 	// Set the new image directory string
 	if (Camera_set_image_dir(self, image_dir) != 0)
 	{
 		Py_XDECREF(callback);
 		self->callback = NULL;
-		
+
 		PyErr_SetString(PyExc_RuntimeError, "Could not set target image directory");
 		return -1;
 	}
-	
+
 	if (Camera_init_semaphores(self) != 0)
 	{
 		Camera_clear_image_dir(self);
 		Py_XDECREF(callback);
 		self->callback = NULL;
-		
+
 		PyErr_SetString(PyExc_RuntimeError, "Could not initialize semaphores");
 		return -1;
 	}
-	
+
 	// Create a USB context if we don't have one already
 	if (!self->usbctx)
 	{
@@ -594,15 +690,15 @@ static int Camera_init(Camera *self, PyObject *args, PyObject *kwds)
 			Camera_clear_image_dir(self);
 			Py_XDECREF(callback);
 			self->callback = NULL;
-			
+
 			PyErr_Format(PyExc_RuntimeError, "Error initializing libusb: Error %d", ret);
 			return -1;
 		}
 	}
-	
+
 	// Open the USB device
 	usbdev = usb_open_device_with_vid_pid(usbctx, vid, pid);
-	
+
 	if (usbdev == NULL)
 	{
 		usb_exit(usbctx);
@@ -610,14 +706,14 @@ static int Camera_init(Camera *self, PyObject *args, PyObject *kwds)
 		Camera_clear_image_dir(self);
 		Py_XDECREF(callback);
 		self->callback = NULL;
-		
+
 		PyErr_SetString(PyExc_RuntimeError, "Could not open device: Device not found");
 		return -1;
 	}
-	
+
 	// Open the PTP device
 	ret = ptp_device_init(&ptpdev, usbdev, pyptp_event_callback, self);
-	
+
 	if (ret != PTP_OK)
 	{
 		usb_close(usbdev);
@@ -626,24 +722,24 @@ static int Camera_init(Camera *self, PyObject *args, PyObject *kwds)
 		Camera_clear_image_dir(self);
 		Py_XDECREF(callback);
 		self->callback = NULL;
-		
+
 		PyErr_Format(PyExc_RuntimeError, "Could not initialize PTP device: PTP error %d", ret);
 		return -1;
 	}
-	
+
 	// Set the members before starting the transfer thread
 	self->usbctx = usbctx;
 	self->usbdev = usbdev;
 	self->ptpdev = ptpdev;
 	self->image_index = 0;
-	
+
 	// Start the transfer thread
 	if (Camera_start_transfer(self) != 0)
 	{
 		self->usbctx = NULL;
 		self->usbdev = NULL;
 		self->ptpdev = NULL;
-		
+
 		ptp_device_free(ptpdev);
 		usb_close(usbdev);
 		usb_exit(usbctx);
@@ -651,30 +747,39 @@ static int Camera_init(Camera *self, PyObject *args, PyObject *kwds)
 		Camera_clear_image_dir(self);
 		Py_XDECREF(callback);
 		self->callback = NULL;
-		
+
 		PyErr_SetString(PyExc_RuntimeError, "Could not start transfer thread");
 		return -1;
 	}
-	
+
 	return 0;
 }
 
 static int Camera_lock_transfer(Camera *self)
 {
 	int ret;
-	
+
+	pyptp_log("Camera_lock_transfer: Locking transfer mutex\n");
+
 	ret = pthread_mutex_timedlock_sec(&self->mutex_transfer, TRANSFER_LOCK_NORMAL_TIMEOUT_SEC);
-	
+
 	if (ret != 0)
 	{
+		pyptp_log("Camera_lock_transfer: Lock failed: %d\n", ret);
+
 		PyErr_Format(PyExc_RuntimeError, "Could not lock transfer mutex: pthread error %d", ret);
 	}
-	
+	else
+	{
+		pyptp_log("Camera_lock_transfer: Lock succeeded\n");
+	}
+
 	return ret;
 }
 
 static void Camera_unlock_transfer(Camera *self)
 {
+	pyptp_log("Camera_unlock_transfer: Unlocking transfer mutex\n");
 	pthread_mutex_unlock(&self->mutex_transfer);
 }
 
@@ -682,69 +787,69 @@ static void Camera_unlock_transfer(Camera *self)
 static PyObject * Camera_handshake(Camera *self, PyObject *args)
 {
 	int ret;
-	
+
 	if (!self->ptpdev)
 	{
 		PyErr_SetString(PyExc_RuntimeError, "The camera has not been initialized.");
 		return NULL;
 	}
-	
+
 	if (Camera_lock_transfer(self) != 0)
 	{
 		return NULL;
 	}
-	
+
 	ret = ptp_sony_handshake(self->ptpdev);
-	
+
 	if (ret != PTP_OK)
 	{
 		Camera_unlock_transfer(self);
 		PyErr_Format(PyExc_RuntimeError, "Handshake failed: PTP error %d", ret);
 		return NULL;
 	}
-	
+
 	Camera_unlock_transfer(self);
-	
+
 	return Py_None;
 }
 
 static PyObject * Camera_start(Camera *self, PyObject *args)
 {
 	int ret;
-	
+
 	if (!self->ptpdev)
 	{
 		PyErr_SetString(PyExc_RuntimeError, "The camera has not been initialized.");
 		return NULL;
 	}
-	
+
 	if (Camera_lock_transfer(self) != 0)
 	{
 		return NULL;
 	}
-	
+
 	ret = ptp_sony_set_control_device_b_u16(self->ptpdev, PTP_DPC_SONY_CTRL_AFLock, 2);
-	
+
 	if (ret != PTP_OK)
 	{
 		Camera_unlock_transfer(self);
 		PyErr_Format(PyExc_RuntimeError, "Could not set AF lock: PTP error %d", ret);
 		return NULL;
 	}
-	
+
 	ret = ptp_sony_set_control_device_b_u16(self->ptpdev, PTP_DPC_SONY_CTRL_Shutter, 2);
-	
+
 	if (ret != PTP_OK)
 	{
 		ptp_sony_set_control_device_b_u16(self->ptpdev, PTP_DPC_SONY_CTRL_AFLock, 1);
 		Camera_unlock_transfer(self);
-		
+
 		PyErr_Format(PyExc_RuntimeError, "Could not set shutter: PTP error %d", ret);
 		return NULL;
 	}
-	
+
 	Camera_unlock_transfer(self);
-	
+
 	Py_INCREF(Py_None);
 	return Py_None;
 }
@@ -752,43 +857,43 @@ static PyObject * Camera_start(Camera *self, PyObject *args)
 static PyObject * Camera_stop(Camera *self, PyObject *args)
 {
 	int ret;
-	
+
 	if (!self->ptpdev)
 	{
 		PyErr_SetString(PyExc_RuntimeError, "The camera has not been initialized.");
 		return NULL;
 	}
-	
+
 	if (Camera_lock_transfer(self) != 0)
 	{
 		return NULL;
 	}
-	
+
 	ret = ptp_sony_set_control_device_b_u16(self->ptpdev, PTP_DPC_SONY_CTRL_Shutter, 1);
-	
+
 	if (ret != PTP_OK)
 	{
 		// Try setting AF lock anyway
 		ptp_sony_set_control_device_b_u16(self->ptpdev, PTP_DPC_SONY_CTRL_AFLock, 1);
-		
+
 		Camera_unlock_transfer(self);
-		
+
 		PyErr_Format(PyExc_RuntimeError, "Could not set shutter: PTP error %d", ret);
 		return NULL;
 	}
-	
+
 	ret = ptp_sony_set_control_device_b_u16(self->ptpdev, PTP_DPC_SONY_CTRL_AFLock, 1);
-	
+
 	if (ret != PTP_OK)
 	{
 		Camera_unlock_transfer(self);
-		
+
 		PyErr_Format(PyExc_RuntimeError, "Could not set AF lock: PTP error %d", ret);
 		return NULL;
 	}
-	
+
 	Camera_unlock_transfer(self);
-	
+
 	Py_INCREF(Py_None);
 	return Py_None;
 }
@@ -796,7 +901,7 @@ static PyObject * Camera_stop(Camera *self, PyObject *args)
 static int Camera_set_drive(Camera *self, const char *drive)
 {
 	int i, ret;
-	
+
 	static struct {
 		const char *name;
 		uint16_t value;
@@ -807,7 +912,7 @@ static int Camera_set_drive(Camera *self, const char *drive)
 		{ "high",   PTP_VAL_SONY_SCM_HIGH },
 		{ NULL, 0 }
 	};
-	
+
 	if (drive != NULL)
 	{
 		for (i = 0; drive_modes[i].name != NULL; i++)
@@ -815,18 +920,18 @@ static int Camera_set_drive(Camera *self, const char *drive)
 			if (strcmp(drive, drive_modes[i].name) == 0)
 			{
 				ret = ptp_sony_set_drive_mode(self->ptpdev, drive_modes[i].value);
-				
+
 				if (ret != PTP_OK)
 				{
 					PyErr_Format(PyExc_RuntimeError, "Could not set drive mode: PTP error %d", ret);
 					return -1;
 				}
-				
+
 				return 0;
 			}
 		}
 	}
-	
+
 	PyErr_Format(PyExc_ValueError, "Unrecognized drive mode: \"%s\"", drive);
 	return -1;
 }
@@ -834,35 +939,35 @@ static int Camera_set_drive(Camera *self, const char *drive)
 static int Camera_set_iso(Camera *self, uint32_t iso)
 {
 	int ret;
-	
+
 	ret = ptp_sony_set_iso(self->ptpdev, iso);
-	
+
 	if (ret != PTP_OK)
 	{
 		PyErr_Format(PyExc_RuntimeError, "Could not set ISO: PTP error %d", ret);
 		return -1;
 	}
-	
+
 	return 0;
 }
 
 static int Camera_set_shutter_speed(Camera *self, const ptp_sony_shutter_speed *speed)
 {
 	int ret;
-	
+
 	if (speed != NULL)
 	{
 		ret = ptp_sony_set_shutter_speed(self->ptpdev, speed);
-		
+
 		if (ret != PTP_OK)
 		{
 			PyErr_Format(PyExc_RuntimeError, "Could not set shutter speed: PTP error %d", ret);
 			return -1;
 		}
-		
+
 		return 0;
 	}
-	
+
 	PyErr_Format(PyExc_ValueError, "Unrecognized shutter speed");
 	return -1;
 }
@@ -871,63 +976,63 @@ static int Camera_set_fnumber(Camera *self, float fnumber)
 {
 	int ret;
 	uint16_t f;
-	
+
 	if (fnumber <= 0.1)
 	{
 		PyErr_Format(PyExc_ValueError, "Invalid F-number");
 		return -1;
 	}
-	
+
 	f = (uint16_t)roundf(fnumber * 100);
-	
+
 	ret = ptp_sony_set_fnumber(self->ptpdev, f);
-				
+
 	if (ret != PTP_OK)
 	{
 		PyErr_Format(PyExc_RuntimeError, "Could not set F-number: PTP error %d", ret);
 		return -1;
 	}
-	
+
 	return 0;
 }
 
 static PyObject * Camera_setparams(Camera *self, PyObject *args, PyObject *kwds)
 {
 	static char *kwlist[] = { "drive", "iso", "shutter", "fnumber", NULL };
-	
+
 	const char *drive = NULL;
 	unsigned int iso = 0;
 	double fnum = 0.0;
 	ptp_sony_shutter_speed shutter = { 0, 0 };
-	
+
 	if (!self->ptpdev)
 	{
 		PyErr_SetString(PyExc_RuntimeError, "The camera has not been initialized.");
 		return NULL;
 	}
-	
+
 	if (!PyArg_ParseTupleAndKeywords(args, kwds, "|zI(HH)d", kwlist, &drive, &iso, &shutter.num, &shutter.denom, &fnum))
 	{
 		return NULL;
 	}
-	
+
 	if (Camera_lock_transfer(self) != 0)
 	{
 		return NULL;
 	}
-	
+
 	if (drive != NULL && Camera_set_drive(self, drive) != 0)
 	{
 		Camera_unlock_transfer(self);
 		return NULL;
 	}
-	
+
 	if (iso != 0 && Camera_set_iso(self, (uint32_t)iso) != 0)
 	{
 		Camera_unlock_transfer(self);
 		return NULL;
 	}
-	
+
 	if (shutter.num != 0 || shutter.denom != 0)
 	{
 		if (Camera_set_shutter_speed(self, &shutter) != 0)
@@ -936,15 +1041,15 @@ static PyObject * Camera_setparams(Camera *self, PyObject *args, PyObject *kwds)
 			return NULL;
 		}
 	}
-	
+
 	if (fnum > 0.01 && Camera_set_fnumber(self, fnum) != 0)
 	{
 		Camera_unlock_transfer(self);
 		return NULL;
 	}
-	
+
 	Camera_unlock_transfer(self);
-	
+
 	Py_INCREF(Py_None);
 	return Py_None;
 }
@@ -952,27 +1057,27 @@ static PyObject * Camera_setparams(Camera *self, PyObject *args, PyObject *kwds)
 static PyObject * Camera_getbattery(Camera *self, PyObject *args)
 {
 	int ret;
-	
+
 	if (!self->ptpdev)
 	{
 		PyErr_SetString(PyExc_RuntimeError, "The camera has not been initialized.");
 		return NULL;
 	}
-	
+
 	if (Camera_lock_transfer(self) != 0)
 	{
 		return NULL;
 	}
-	
+
 	ret = ptp_sony_get_battery(self->ptpdev);
-	
+
 	Camera_unlock_transfer(self);
-	
+
 	if (ret < 0)
 	{
 		PyErr_Format(PyExc_RuntimeError, "Could not get battery level: PTP error %d", ret);
 		return NULL;
 	}
-	
+
 	return PyInt_FromLong(ret);
 }
