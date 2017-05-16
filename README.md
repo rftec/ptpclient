@@ -31,7 +31,7 @@ The manual assumes gcc and libpthread are already installed (as in Ubuntu).
 Go to a directory of your choice and clone the repository:
 
     cd ~/projects
-    git clone https://bitbucket.org/rftech/ptpclient.git
+    git clone https://github.com/rftec/ptpclient.git
 
 ### Install libusb ###
 
